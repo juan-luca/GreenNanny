@@ -1,0 +1,280 @@
+<!-- index.html completo -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Green Nanny Dashboard (Dark Mode)</title>
+
+  <!-- Bootstrap 4.5 y AdminLTE (versión dark) -->
+  <link
+    href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css"
+    rel="stylesheet"
+  />
+  <!-- AdminLTE Dark -->
+  <link
+    href="https://cdn.jsdelivr.net/npm/admin-lte@3.1/dist/css/adminlte.min.css"
+    rel="stylesheet"
+  />
+  <!-- Font Awesome para iconos -->
+  <link
+    href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css"
+    rel="stylesheet"
+  />
+  <!-- Estilos personalizados embebidos -->
+  <style>
+    /* Activar dark-mode en todo el body */
+    body.dark-mode {
+      background-color: #343a40;
+      color: #f8f9fa;
+      font-size: 16px;
+      line-height: 1.5;
+    }
+    .navbar-dark .navbar-brand,
+    .navbar-dark .nav-link {
+      color: #f8f9fa;
+    }
+    .small-box {
+      background: #454d55;
+      color: #ffffff;
+      border-radius: 0.25rem;
+    }
+    .small-box .inner h3 {
+      font-size: 2rem;
+      font-weight: bold;
+    }
+    .small-box .inner p {
+      font-size: 1rem;
+    }
+    .widget-dark {
+      background-color: #3a3f45;
+      border-radius: 0.25rem;
+      padding: 1rem;
+      margin-bottom: 1rem;
+    }
+    .widget-title {
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+      font-size: 1.125rem;
+    }
+    .form-control,
+    .btn,
+    .nav-link,
+    .navbar-brand {
+      border-radius: 0.25rem;
+    }
+    .form-inline label {
+      margin-right: 0.5rem;
+    }
+    .btn-block {
+      width: 100%;
+    }
+    .btn-lg {
+      font-size: 1rem;
+      padding: 0.75rem 1rem;
+    }
+    #measurementHistory {
+      background-color: #2e3237;
+      border: 1px solid #454d55;
+      height: 250px;
+      overflow: auto;
+    }
+    .btn:focus,
+    .nav-link:focus,
+    select:focus,
+    input[type='number']:focus {
+      outline: 2px dashed #80bdff;
+      outline-offset: 2px;
+    }
+    .loader {
+      border: 4px solid #f3f3f3;
+      border-top: 4px solid #3498db;
+      border-radius: 50%;
+      width: 20px;
+      height: 20px;
+      animation: spin 2s linear infinite;
+      display: inline-block;
+      vertical-align: middle;
+      margin-left: 10px;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    /* Styles.css adicional */
+    body {
+        background-color: #333;
+        color: #fff;
+    }
+    .content-wrapper {
+        background-color: #222;
+        padding: 20px;
+    }
+    .widget {
+        background-color: #333;
+        border: 1px solid #444;
+        border-radius: 10px;
+        margin-bottom: 20px;
+        padding: 20px;
+    }
+    .form-control {
+        background-color: #444;
+        border: none;
+        color: #fff;
+    }
+    .form-control:focus {
+        background-color: #555;
+    }
+    .btn {
+        margin-top: 10px;
+    }
+    canvas {
+        max-width: 100%;
+    }
+    .measurement-history-entry {
+        padding: 5px;
+    }
+    .measurement-history-entry:nth-child(odd) {
+        background-color: #2a2a2a;
+    }
+    .measurement-history-entry:nth-child(even) {
+        background-color: #3a3a3a;
+    }
+    .main-header {
+        background-color: #1a1a1a;
+        border-bottom: 1px solid #444;
+    }
+    .main-header .navbar-nav .nav-link {
+        color: #fff;
+    }
+    .main-header .navbar-nav .nav-link:hover {
+        color: #007bff;
+    }
+  </style>
+</head>
+<body class="hold-transition sidebar-mini layout-fixed dark-mode">
+  <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+    <div class="container-fluid">
+      <a class="navbar-brand d-flex align-items-center" href="#">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="30" height="30" class="mr-2" aria-hidden="true" focusable="false">
+          <style>.leaf { fill: #2ecc71; } .stem { stroke: #27ae60; stroke-width: 4; stroke-linecap: round; }</style>
+          <path class="leaf" d="M50 10 C20 40, 30 70, 50 90 C70 70, 80 40, 50 10z"></path>
+          <path class="leaf" d="M30 30 C10 50, 20 80, 30 90 C50 80, 50 50, 30 30z"></path>
+          <path class="leaf" d="M70 30 C90 50, 80 80, 70 90 C50 80, 50 50, 70 30z"></path>
+          <line class="stem" x1="50" y1="90" x2="50" y2="100"></line>
+        </svg>
+        <span>Green Nanny</span>
+      </a>
+      <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav"
+        aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="navbarNav">
+        <ul class="navbar-nav ml-auto">
+          <li class="nav-item"><a class="nav-link active" href="index.html">Dashboard</a></li>
+          <li class="nav-item"><a class="nav-link" href="calendar-html.html">Harvest Helper</a></li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <div class="wrapper">
+    <div class="content-wrapper" style="background-color: #343a40;">
+      <section class="content-header">
+        <div class="container-fluid">
+          <div class="row mb-3 mt-3">
+            <div class="col-12"><h1 class="text-white">Green Nanny Dashboard</h1></div>
+          </div>
+        </div>
+      </section>
+      <section class="content">
+        <div class="container-fluid">
+          <div class="row">
+            <div class="col-lg-3 col-md-6 mb-3">
+              <div class="small-box"><div class="inner"><h3 id="temperature">0 °C</h3><p>Temperatura ambiental actual</p></div></div>
+            </div>
+            <div class="col-lg-3 col-md-6 mb-3">
+              <div class="small-box"><div class="inner"><h3 id="humidity">0 %</h3><p>Humedad ambiental actual</p></div></div>
+            </div>
+            <div class="col-lg-3 col-md-6 mb-3">
+              <div class="small-box"><div class="inner"><h3 id="humidityThreshold">0 %</h3><p>Umbral de humedad</p></div></div>
+            </div>
+            <div class="col-lg-3 col-md-6 mb-3">
+              <div class="small-box"><div class="inner"><h3 id="pumpActivationCount">0</h3><p>Activaciones de la bomba</p></div></div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-lg-6 mb-3">
+              <div class="widget-dark"><div class="widget-title">VPD (Diferencia de Presión de Vapor)</div><div class="widget-body"><h3 id="vpd" style="font-weight: normal;">N/A</h3></div></div>
+            </div>
+            <div class="col-lg-6 mb-3">
+              <div class="widget-dark"><div class="widget-title">Tiempo transcurrido en total</div><div class="widget-body"><h3 id="totalElapsedTime" style="font-weight: normal;">0 Horas 0 Minutos</h3></div></div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-lg-6 mb-3">
+              <div class="widget-dark"><div class="widget-title">Historial de Temperatura y Humedad</div><div class="widget-body"><canvas id="measurementChart" aria-label="Historial de mediciones de temperatura y humedad"></canvas></div></div>
+            </div>
+            <div class="col-lg-6 mb-3">
+              <div class="widget-dark"><div class="widget-title">Registro de mediciones</div><div class="widget-body"><div id="measurementHistory" class="form-control text-white" role="log" aria-live="polite"></div></div></div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-lg-6 mb-3">
+              <div class="widget-dark"><div class="widget-title">Configuración de Umbral de Humedad</div><div class="widget-body">
+                  <form id="humidityForm" class="form-inline">
+                    <div class="form-group mr-2 mb-2">
+                      <label for="umbral" class="sr-only">Nuevo umbral</label>
+                      <input type="number" name="umbral" id="umbral" class="form-control bg-dark text-white border-secondary" placeholder="Nuevo umbral" min="0" max="100" required aria-label="Nuevo umbral de humedad"/>
+                    </div>
+                    <button type="submit" class="btn btn-primary mb-2">Actualizar</button>
+                  </form>
+                </div></div>
+            </div>
+            <div class="col-lg-6 mb-3">
+              <div class="widget-dark"><div class="widget-title">Acciones Generales</div><div class="widget-body">
+                  <button id="activatePump" class="btn btn-success btn-lg btn-block mb-2">Activar bomba</button>
+                  <button id="deactivatePump" class="btn btn-danger btn-lg btn-block mb-2">Apagar bomba</button>
+                  <button id="takeMeasurement" class="btn btn-primary btn-lg btn-block mb-2">Realizar medición</button>
+                  <button id="clearMeasurements" class="btn btn-warning btn-lg btn-block mb-2">Borrar historial de mediciones</button>
+                  <button id="restartSystem" class="btn btn-danger btn-lg btn-block">Reiniciar sistema</button>
+                </div></div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-lg-6 mb-3">
+              <div class="widget-dark"><div class="widget-title">Control Manual de Etapas</div><div class="widget-body">
+                  <div class="alert alert-secondary" id="currentStageInfo">Etapa actual: <span id="currentStageLabel">-</span></div>
+                  <button class="btn btn-outline-info mb-3" id="refreshStage"><i class="fas fa-sync"></i> Refrescar Etapa</button>
+                  <form id="manualStageForm" class="form-inline mb-2">
+                    <div class="form-group mr-2 mb-2">
+                      <label for="manualStageSelect" class="mr-2">Seleccionar Etapa:</label>
+                      <select id="manualStageSelect" class="form-control bg-dark text-white border-secondary" aria-label="Seleccionar etapa manual de la planta">
+                        <option value="0">Germinación (índice 0)</option>
+                        <option value="1">Vegetativo (índice 1)</option>
+                        <option value="2">Prefloración (índice 2)</option>
+                        <option value="3">Floración (índice 3)</option>
+                        <option value="4">Maduración (índice 4)</option>
+                      </select>
+                    </div>
+                    <button type="submit" class="btn btn-primary mb-2">Cambiar Etapa</button>
+                  </form>
+                  <button class="btn btn-outline-danger" id="resetManualStageButton"><i class="fas fa-times-circle"></i> Resetear Control Manual</button>
+                </div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Librerías externas -->
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/admin-lte@3.1/dist/js/adminlte.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/js/all.min.js"></script>
+
+  <!-- Tu app.js unificado -->
+  <script src="js/app.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Seleccionar Red WiFi - Weed Nanny</title>
+    <link href="bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #222;
+            color: #fff;
+        }
+        .container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        #wifiFormPanel {
+            background-color: #333;
+            border: 1px solid #444;
+            border-radius: 10px;
+            padding: 20px;
+            width: 400px;
+        }
+        #connectionStatusContainer {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        #ssid {
+            background-color: #444;
+            color: #fff;
+        }
+        #password {
+            background-color: #444;
+            color: #fff;
+        }
+        .btn-primary {
+            background-color: #007bff;
+            border-color: #007bff;
+        }
+        .btn-primary:hover {
+            background-color: #0056b3;
+            border-color: #0056b3;
+        }
+        .progress-bar-success {
+            background-color: #28a745 !important;
+        }
+        .progress-bar-failed {
+            background-color: #dc3545 !important;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="wifiFormPanel">
+            <div id="connectionStatusContainer">
+                <h2>Estado de la conexión - Weed Nanny</h2>
+                <div class="progress">
+                    <div id="connectionProgressBar" class="progress-bar" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+                </div>
+                <span id="connectionStatus"></span>
+            </div>
+            <form id="wifiForm">
+                <h1 class="mt-4 mb-4 text-center">Seleccionar Red WiFi - Weed Nanny</h1>
+                <div class="form-group">
+                    <label for="ssid">Red WiFi:</label>
+                    <select class="form-control" id="ssid">
+                        <!-- Opciones de red se cargarán aquí -->
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="password">Contraseña:</label>
+                    <input type="password" class="form-control" id="password" name="password" required>
+                </div>
+                <button type="submit" class="btn btn-primary btn-block">Conectar</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- jQuery -->
+    <script src="jquery-3.6.0.min.js"></script>
+    <!-- Bootstrap JS -->
+    <script src="bootstrap.min.js"></script>
+    <script>
+        $(document).ready(function() {
+            // Al cargar la página, obtener la lista de redes WiFi disponibles
+            fetchWiFiNetworks();
+        });
+        document.getElementById("wifiForm").addEventListener("submit", function(event) {
+            event.preventDefault();
+            let ssid = document.getElementById("ssid").value;
+            let password = document.getElementById("password").value;
+            console.log(ssid);
+            fetch("/connectWifi", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded"
+                },
+                body: "ssid=" + encodeURIComponent(ssid) + "&password=" + encodeURIComponent(password)
+            })
+            .then(response => {
+                if (response.ok) {
+                    return response.text();
+                } else {
+                    throw new Error("Error al conectar a la red WiFi. Código de estado: " + response.status);
+                }
+            })
+            .then(data => {
+                document.getElementById("connectionStatus").textContent = data;
+                updateProgressBar(100, true);
+                saveWifiCredentials(ssid, password); // Guardar las credenciales WiFi
+            })
+            .catch(error => {
+                alert(error.message); // Mostrar el mensaje de error en un alert
+                document.getElementById("connectionStatus").textContent = error.message;
+                updateProgressBar(0, false);
+            });
+        });
+
+        function fetchWiFiNetworks() {
+            fetch('/wifiList')
+                .then(response => response.json())
+                .then(networks => {
+                    const wifiDropdown = $('#ssid');
+                    wifiDropdown.empty(); // Limpiar el dropdown antes de agregar nuevas opciones
+                    networks.forEach(network => {
+                        wifiDropdown.append(`<option value="${network}">${network}</option>`);
+                    });
+                })
+                .catch(error => console.error('Error al obtener las redes WiFi:', error));
+        }
+
+        function updateProgressBar(percentage, isSuccess) {
+            const progressBar = $('#connectionProgressBar');
+            progressBar.css('width', percentage + '%').attr('aria-valuenow', percentage).text(percentage + '%');
+            if (isSuccess) {
+                progressBar.removeClass('progress-bar-failed').addClass('progress-bar-success');
+            } else {
+                progressBar.removeClass('progress-bar-success').addClass('progress-bar-failed');
+            }
+        }
+
+        function saveWifiCredentials(ssid, password) {
+            const formData = new FormData();
+            formData.append('ssid', ssid);
+            formData.append('password', password);
+
+            fetch('/saveWifiCredentials', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                if (response.ok) {
+                    console.log('Credenciales WiFi guardadas exitosamente.');
+                    // Reiniciar la aplicación después de guardar las credenciales
+                    setTimeout(function() {
+                        location.reload();
+                    }, 3000); // Reiniciar después de 3 segundos
+                } else {
+                    throw new Error('Error al guardar las credenciales WiFi.');
+                }
+            })
+            .catch(error => {
+                console.error('Error al guardar las credenciales WiFi:', error);
+            });
+        }
+    </script>
+</body>
+</html>

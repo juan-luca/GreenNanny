@@ -1,0 +1,148 @@
+body {
+    background-color: #333;
+    color: #fff;
+}
+
+.content-wrapper {
+    background-color: #222;
+    padding: 20px;
+}
+
+.widget {
+    background-color: #333;
+    border: 1px solid #444;
+    border-radius: 10px;
+    margin-bottom: 20px;
+    padding: 20px;
+}
+
+.widget-title {
+    font-size: 24px;
+    background-color: #444;
+    padding: 10px;
+    margin-bottom: 20px;
+}
+
+.form-control {
+    background-color: #444;
+    border: none;
+    color: #fff;
+}
+
+.form-control:focus {
+    background-color: #555;
+}
+
+.btn {
+    margin-top: 10px;
+}
+
+canvas {
+    max-width: 100%;
+}
+
+#measurementHistory {
+    background-color: #222;
+    color: #fff;
+    border: 1px solid #555;
+    padding: 10px;
+    height: 200px;
+    overflow-y: scroll;
+}
+#umbral {
+    background-color: #222;
+    color: #fff;
+    border: 1px solid #555;
+}
+
+.measurement-history-entry {
+    padding: 5px;
+}
+
+.measurement-history-entry:nth-child(odd) {
+    background-color: #2a2a2a;
+}
+
+.measurement-history-entry:nth-child(even) {
+    background-color: #3a3a3a;
+}
+
+#calendar {
+    background-color: #222;
+    color: #fff;
+    padding: 20px;
+    border-radius: 10px;
+}
+
+.fc-theme-standard td, .fc-theme-standard th {
+    border-color: #444;
+}
+
+.fc .fc-daygrid-day-number, .fc .fc-col-header-cell-cushion {
+    color: #fff;
+}
+
+.fc-daygrid-day-events {
+    margin-top: 4px;
+}
+
+.fc-event {
+    border: none;
+}
+
+.fc-toolbar-title {
+    color: #fff;
+}
+
+.fc-button-primary {
+    background-color: #444;
+    border-color: #555;
+}
+
+.fc-button-primary:hover {
+    background-color: #555;
+    border-color: #666;
+}
+
+.fc-button-primary:not(:disabled).fc-button-active, 
+.fc-button-primary:not(:disabled):active {
+    background-color: #007bff;
+    border-color: #0056b3;
+}
+
+.main-header {
+    background-color: #1a1a1a;
+    border-bottom: 1px solid #444;
+}
+
+.main-header .navbar-nav .nav-link {
+    color: #fff;
+}
+
+.main-header .navbar-nav .nav-link:hover {
+    color: #007bff;
+}
+/* Dark‑theme base ------------------------------------------------------ */
+body            { background:#333; color:#fff; }
+.content-wrapper{ background:#222; padding:20px; }
+
+.small-box      { background:#454d55; color:#fff; border-radius:.25rem; }
+.small-box .inner h3 { font-size:2rem; font-weight:bold; }
+
+.widget-dark    { background:#3a3f45; border-radius:.25rem; padding:1rem; margin-bottom:1rem; }
+.widget-title   { font-weight:600; margin-bottom:.5rem; font-size:1.125rem; }
+
+.form-control, .btn, .nav-link, .navbar-brand { border-radius:.25rem; }
+
+#measurementHistory{
+  background:#2e3237; border:1px solid #454d55;
+  height:250px; overflow:auto;
+}
+
+.measurement-history-entry:nth-child(odd)  { background:#2a2a2a; }
+.measurement-history-entry:nth-child(even) { background:#3a3a3a; }
+
+/* Accesible focus */
+.btn:focus, .nav-link:focus, select:focus, input[type=number]:focus{
+  outline:2px dashed #80bdff; outline-offset:2px;
+}

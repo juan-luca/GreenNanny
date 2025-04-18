@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Green Nanny Dashboard</title>
+    <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/admin-lte@3.1/dist/css/adminlte.min.css" rel="stylesheet">
+    <link href="css/styles.css" rel="stylesheet">
+</head>
+<body class="hold-transition sidebar-mini layout-fixed">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container-fluid">
+          <a class="navbar-brand" href="#">
+            <svg xmlns="http://www.w3.org/2000/svg" viewbox="0 0 100 100" width="30" height="30" class="d-inline-block align-top">
+              <style>
+                .leaf { fill: #2ecc71; }
+                .stem { stroke: #27ae60; stroke-width: 4; stroke-linecap: round; }
+              </style>
+              <path class="leaf" d="M50 10 C20 40, 30 70, 50 90 C70 70, 80 40, 50 10z"></path>
+              <path class="leaf" d="M30 30 C10 50, 20 80, 30 90 C50 80, 50 50, 30 30z"></path>
+              <path class="leaf" d="M70 30 C90 50, 80 80, 70 90 C50 80, 50 50, 70 30z"></path>
+              <line class="stem" x1="50" y1="90" x2="50" y2="100"></line>
+            </svg>
+            Green Nanny
+          </a>
+          <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+          </button>
+          <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav">
+              <li class="nav-item">
+                <a class="nav-link" href="index.html">DASHBOARD</a>
+              </li>
+              <li class="nav-item">
+                <a class="nav-link" href="calendar-html.html">Harvest Helper</a>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </nav>
+    <div class="wrapper">
+        <div class="content-wrapper">
+            <section class="content-header">
+                <div class="container-fluid">
+                    <div class="row mb-2">
+                        <div class="col-sm-6">
+                            <h1>Green Nanny Dashboard</h1>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            <section class="content">
+                <div class="container-fluid">
+                    <div class="row">
+                        <div class="col-lg-3 col-6">
+                            <div class="small-box bg-info">
+                                <div class="inner">
+                                    <h3 id="temperature">0 °C</h3>
+                                    <p>Temperatura ambiental actual</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-3 col-6">
+                            <div class="small-box bg-success">
+                                <div class="inner">
+                                    <h3 id="humidity">0 %</h3>
+                                    <p>Humedad ambiental actual</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-3 col-6">
+                            <div class="small-box bg-warning">
+                                <div class="inner">
+                                    <h3 id="humidityThreshold">0 %</h3>
+                                    <p>Umbral de humedad</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-3 col-6">
+                            <div class="small-box bg-danger">
+                                <div class="inner">
+                                    <h3 id="pumpActivationCount">0</h3>
+                                    <p>Cantidad de activaciones de la bomba</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-lg-6">
+                            <div class="widget">
+                                <div class="widget-title">VPD (Diferencia de Presión de Vapor)</div>
+                                <div class="widget-body">
+                                    <h3 id="vpd">N/A</h3>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div class="widget">
+                                <div class="widget-title">Tiempo transcurrido en total</div>
+                                <div class="widget-body">
+                                    <h3 id="totalElapsedTime">0 Horas 0 Minutos</h3>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-lg-6">
+                            <div class="widget">
+                                <div class="widget-title">Historial de Temperatura y Humedad</div>
+                                <div class="widget-body">
+                                    <canvas id="measurementChart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div class="widget">
+                                <div class="widget-title">Registro de mediciones</div>
+                                <div class="widget-body">
+                                    <div id="measurementHistory" class="form-control" readonly></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-lg-12">
+                            <div class="widget">
+                                <div class="widget-title">
+                                    Calendar
+                                </div>
+                                <div class="widget-body">
+                                    <div id="calendar"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-lg-6">
+                            <div class="widget">
+                                <div class="widget-title">Configuración de Umbral de Humedad</div>
+                                <div class="widget-body">
+                                    <form id="humidityForm">
+                                        <input type="number" name="umbral" id="umbral" class="form-control" placeholder="Nuevo umbral" min="0" max="100" required>
+                                        <input type="submit" class="btn btn-primary" value="Actualizar">
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                            <div class="col-lg-6">
+                                <div class="widget">
+                                    <div class="widget-title">Acciones</div>
+                                    <div class="widget-body">
+                                        <button id="activatePump" class="btn btn-success btn-lg btn-block">Activar bomba</button>
+                                        <button id="takeMeasurement" class="btn btn-primary btn-lg btn-block">Realizar medición</button>
+                                        <button id="clearMeasurements" class="btn btn-warning btn-lg btn-block">Borrar historial de mediciones</button>
+                                        <button id="restartSystem" class="btn btn-danger btn-lg btn-block">Reiniciar sistema</button>
+                                    </div>
+                                </div>
+                            </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/admin-lte@3.1/dist/js/adminlte.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <script src="js/api.js" type="module"></script>
+    <script src="js/ui.js" type="module"></script>
+    <script src="js/chart.js" type="module"></script>
+    <script src="js/app.js" type="module"></script>
+</body>
+</html>
+<script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js';
+    import { getDatabase } from 'https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js';
+    import firebaseConfig from './firebase-config.js';
+    
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+  </script>
+
