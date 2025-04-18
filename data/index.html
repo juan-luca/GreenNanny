@@ -1,4 +1,3 @@
-<!-- index.html completo - CON MEJORAS INTEGRADAS -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -9,104 +8,134 @@
     <!-- 2. Dynamic Title (set by JS) -->
     <title>Green Nanny Dashboard</title>
 
-    <!-- Bootstrap 5.1+ (for better dark mode, toasts, etc.) -->
+    <!-- Bootstrap 5.1+ -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-1BmE4kWBq78iYhFldvKuhfTAU6auU8tT94WrHftjDbrCEXSU1oBoqyl2QvZ6jIW3" crossorigin="anonymous">
-    <!-- AdminLTE 3.1+ (Ensure compatibility with Bootstrap 5 if needed, or use AdminLTE's BS4 version) -->
+    <!-- AdminLTE 3.1+ -->
     <link href="https://cdn.jsdelivr.net/npm/admin-lte@3.1/dist/css/adminlte.min.css" rel="stylesheet">
     <!-- Font Awesome 5.15+ -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" rel="stylesheet" />
 
     <!-- Estilos personalizados embebidos -->
     <style>
-        /* Base Dark Mode & Global Styles */
+        /* Base Dark Mode & Global Styles using CSS Variables */
         :root {
-            --bs-body-bg: #212529; /* Darker background */
-            --bs-body-color: #f8f9fa; /* Light text */
-            --bs-secondary-bg: #343a40;
-            --bs-light-rgb: 248,249,250; /* For contrast calculations */
-             --gn-success: #28a745;
-             --gn-info: #17a2b8;
-             --gn-warning: #ffc107;
-             --gn-danger: #dc3545;
-             --gn-primary: #0d6efd;
-             --gn-chart-red: rgba(255, 99, 132, 1);
-             --gn-chart-blue: rgba(54, 162, 235, 1);
-             --gn-chart-yellow: rgba(255, 206, 86, 1);
-             --gn-grid-color: rgba(255, 255, 255, 0.1);
-             --gn-focus-ring: 0 0 0 .25rem rgba(var(--gn-primary), .5); /* Adjusted focus */
+            /* Core Colors */
+            --gn-bg: #212529; /* Main background */
+            --gn-text: #f8f9fa; /* Main text */
+            --gn-text-muted: #adb5bd;
+            --gn-card-bg: #343a40; /* Widget/Card background */
+            --gn-border-color: #495057;
+            --gn-input-bg: #495057;
+            --gn-input-border: #6c757d;
+            --gn-navbar-bg: #1a1a1a;
+
+            /* Accent Colors */
+            --gn-primary: #0d6efd; /* Blue */
+            --gn-success: #198754; /* Darker Green */
+            --gn-info: #0dcaf0;   /* Cyan */
+            --gn-warning: #ffc107; /* Yellow */
+            --gn-danger: #dc3545;  /* Red */
+            --gn-light: #f8f9fa;
+            --gn-secondary: #6c757d; /* Gray */
+
+            /* Chart Colors */
+             --gn-chart-temp: rgba(255, 99, 132, 1); /* Red */
+             --gn-chart-humid: rgba(54, 162, 235, 1); /* Blue */
+             --gn-chart-pump: rgba(255, 206, 86, 1); /* Yellow */
+             --gn-chart-grid: rgba(255, 255, 255, 0.1);
+             --gn-chart-text: var(--gn-text-muted);
+
+            /* UI Elements */
+            --gn-border-radius: 0.35rem;
+            --gn-box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+            --gn-focus-ring: 0 0 0 .25rem rgba(var(--bs-primary-rgb), .4); /* Use Bootstrap var for consistency */
+
+             /* Font */
+            --gn-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+            --gn-base-font-size: 0.95rem;
+            --gn-line-height: 1.6;
         }
 
         body {
-            background-color: var(--bs-body-bg);
-            color: var(--bs-body-color);
-            font-size: 0.95rem; /* Slightly smaller base font */
-            line-height: 1.6;
+            background-color: var(--gn-bg);
+            color: var(--gn-text);
+            font-family: var(--gn-font-family);
+            font-size: var(--gn-base-font-size);
+            line-height: var(--gn-line-height);
              -webkit-font-smoothing: antialiased;
              -moz-osx-font-smoothing: grayscale;
         }
 
         /* Navbar */
         .navbar {
-            background-color: #1a1a1a !important; /* Even darker navbar */
-            box-shadow: 0 2px 4px rgba(0,0,0,0.2); /* 153. Navbar Shadow */
+            background-color: var(--gn-navbar-bg) !important;
+            box-shadow: var(--gn-box-shadow);
         }
         .navbar-brand svg { margin-right: 10px; }
-        .nav-link.active { font-weight: bold; color: var(--gn-primary) !important; } /* 144. Active Nav Link */
+        .nav-link.active { font-weight: bold; color: var(--gn-primary) !important; }
         .navbar-dark .navbar-toggler { border-color: rgba(255,255,255,.3); }
 
         /* Wrapper & Content */
         .content-wrapper {
-             background-color: var(--bs-body-bg); /* Consistent background */
+             background-color: var(--gn-bg);
              padding: 20px;
-             min-height: calc(100vh - 56px); /* Adjust based on navbar height */
+             min-height: calc(100vh - 56px - 51px); /* Full height minus navbar and footer */
         }
-         .content-header h1 { margin-bottom: 1.5rem; }
+         .content-header h1 { margin-bottom: 1.5rem; font-weight: 300;}
 
         /* Small Boxes (Info Cards) */
         .small-box {
-            background: var(--bs-secondary-bg);
-            color: var(--bs-body-color);
-            border-radius: 0.35rem; /* 152. Border Radius Consistency */
+            background: var(--gn-card-bg);
+            color: var(--gn-text);
+            border-radius: var(--gn-border-radius);
             padding: 15px;
             margin-bottom: 1rem;
-             box-shadow: 0 1px 3px rgba(0,0,0,0.15); /* 151. Subtle Box Shadows */
-             transition: transform 0.2s ease-in-out; /* Add hover effect */
-             position: relative; /* For icon positioning */
+             box-shadow: var(--gn-box-shadow);
+             transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+             position: relative;
+             height: 100%; /* Ensure equal height in row */
+             display: flex;
+             flex-direction: column;
         }
-        .small-box:hover { transform: translateY(-3px); }
+        .small-box:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+        }
+        .small-box .inner { flex-grow: 1; }
         .small-box .inner h3 {
             font-size: 2.1rem;
             font-weight: 600;
             margin: 0 0 5px 0;
              white-space: nowrap;
-             color: var(--bs-body-color);
+             color: var(--gn-text);
         }
-        .small-box .inner p { font-size: 0.9rem; margin-bottom: 0; color: #adb5bd; }
-        .small-box .icon { /* Optional: Add background icons */
+        .small-box .inner p { font-size: 0.9rem; margin-bottom: 0; color: var(--gn-text-muted); }
+        .small-box .icon {
             position: absolute;
-            top: 10px;
+            top: 15px;
             right: 15px;
-            font-size: 50px;
-            opacity: 0.2;
+            font-size: 50px; /* Adjusted size */
+            opacity: 0.15;
             color: rgba(255,255,255,0.5);
-            transition: opacity 0.3s linear;
+            transition: opacity 0.3s linear, transform 0.3s ease;
+            z-index: 0;
         }
-         .small-box:hover .icon { opacity: 0.4; }
-         /* 11. Icons for Small Boxes */
+         .small-box:hover .icon { opacity: 0.3; transform: scale(1.1); }
+         /* Specific Icons */
          #tempWidget .icon i::before { content: "\f2c9"; /* fa-thermometer-half */ }
          #humidWidget .icon i::before { content: "\f043"; /* fa-tint */ }
-         #threshWidget .icon i::before { content: "\f146"; /* fa-sliders-h */ }
-         #pumpCountWidget .icon i::before { content: "\f7a0"; /* fa-pump-soap or another */ }
+         #stageWidget .icon i::before { content: "\f4d8"; /* fa-seedling */ } /* Changed from threshold */
+         #pumpCountWidget .icon i::before { content: "\f04b"; /* fa-play-circle for activations */ }
 
 
-        /* Widgets */
+        /* General Widgets */
         .widget-dark {
-            background-color: var(--bs-secondary-bg);
-            border-radius: 0.35rem;
+            background-color: var(--gn-card-bg);
+            border-radius: var(--gn-border-radius);
             padding: 1.25rem;
             margin-bottom: 1rem;
-             box-shadow: 0 1px 3px rgba(0,0,0,0.15);
-             height: 100%; /* Ensure widgets in same row have same height */
+             box-shadow: var(--gn-box-shadow);
+             height: 100%;
              display: flex;
              flex-direction: column;
         }
@@ -114,92 +143,104 @@
             font-weight: 600;
             margin-bottom: 0.75rem;
             font-size: 1.1rem;
-            border-bottom: 1px solid #495057;
+            border-bottom: 1px solid var(--gn-border-color);
             padding-bottom: 0.5rem;
+            display: flex; /* For aligning items like badges */
+            justify-content: space-between;
+            align-items: center;
         }
-         .widget-body { flex-grow: 1; } /* Allow body to fill space */
-        .widget-dark h3 { font-weight: 300; font-size: 1.8rem; }
+         .widget-body { flex-grow: 1; }
+         .widget-dark h3 { font-weight: 300; font-size: 1.8rem; margin-bottom: 0; }
 
         /* Forms & Buttons */
         .form-control, .form-select {
-            background-color: #495057; /* Darker input */
-            border: 1px solid #6c757d;
-            color: var(--bs-body-color);
-            border-radius: 0.3rem; /* 152 */
+            background-color: var(--gn-input-bg);
+            border: 1px solid var(--gn-input-border);
+            color: var(--gn-text);
+            border-radius: var(--gn-border-radius);
         }
         .form-control:focus, .form-select:focus {
-            background-color: #5a6268;
+            background-color: #5a6268; /* Slightly lighter on focus */
             border-color: var(--gn-primary);
-            box-shadow: var(--gn-focus-ring); /* 184. Focus Ring Style */
-            color: var(--bs-body-color);
+            box-shadow: var(--gn-focus-ring);
+            color: var(--gn-text);
+            outline: none;
         }
-         .form-control::placeholder { color: #adb5bd; } /* 190. Placeholder Color */
-         .form-control.is-invalid { border-color: var(--gn-danger); } /* 59. Form Validation Feedback */
-         .form-control.is-invalid:focus { box-shadow: 0 0 0 .25rem rgba(var(--gn-danger), .5); }
-
+         .form-control::placeholder { color: var(--gn-text-muted); opacity: 0.8; }
+         .form-control.is-invalid, .form-select.is-invalid { border-color: var(--gn-danger); }
+         .form-control.is-invalid:focus, .form-select.is-invalid:focus { box-shadow: 0 0 0 .25rem rgba(var(--bs-danger-rgb), .4); }
+         .form-text { font-size: 0.85rem; color: var(--gn-text-muted); }
+         legend { font-size: 1.1rem; font-weight: 600; }
+         fieldset { border: 1px solid var(--gn-border-color); border-radius: var(--gn-border-radius); padding: 1.25rem; margin-bottom: 1rem; }
+         legend.widget-title { border-bottom: none; margin-bottom: 1rem; padding: 0; } /* Adjust legend if used as title */
 
         .btn {
-            border-radius: 0.3rem;
-            padding: 0.5rem 1rem; /* 161. Button Padding */
+            border-radius: var(--gn-border-radius);
+            padding: 0.5rem 1rem;
             font-size: 0.9rem;
-             transition: all 0.2s ease; /* 98. Transition Effects */
+             transition: all 0.2s ease;
+             box-shadow: 0 1px 2px rgba(0,0,0,0.15); /* Subtle button shadow */
         }
-        .btn:focus-visible { /* Use focus-visible for keyboard only focus */
-             box-shadow: var(--gn-focus-ring); /* 53, 184 */
+         .btn:hover { transform: translateY(-1px); box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+         .btn:active { transform: translateY(0px); box-shadow: inset 0 1px 2px rgba(0,0,0,0.2); }
+         .btn:focus-visible {
+             box-shadow: var(--gn-focus-ring);
              outline: none;
-        }
+         }
          .btn-lg { font-size: 1rem; padding: 0.65rem 1.25rem; }
-         .btn i { margin-right: 5px; } /* 157. Icon Alignment */
-         .btn .loader { margin-left: 8px; } /* 164. Spinner Size/Margin */
+         .btn i.fa, .btn i.fas { margin-right: 7px; } /* Space between icon and text */
+         .btn .loader { margin-left: 8px; vertical-align: -2px;}
 
 
         /* Measurement History */
         #measurementHistory {
-            background-color: #2c3034;
-            border: 1px solid #495057;
-            height: 300px; /* Increased height */
+            background-color: #2c3034; /* Slightly different dark shade */
+            border: 1px solid var(--gn-border-color);
+            height: 350px; /* Increased height */
             overflow-y: auto;
-            font-size: 0.85rem; /* Smaller font for density */
-            border-radius: 0.3rem;
-             padding: 5px; /* Padding inside the box */
-             color: #ced4da; /* Slightly dimmer text */
+            font-size: 0.85rem;
+            border-radius: var(--gn-border-radius);
+             padding: 8px;
+             color: #ced4da;
         }
         .measurement-history-entry {
-            padding: 6px 10px; /* 15. History Density */
-            border-bottom: 1px solid #3a3f45; /* Subtle separator */
-             display: flex; /* Use flexbox for alignment */
-             flex-wrap: wrap; /* Allow wrapping on small screens */
-             gap: 5px 15px; /* Spacing between items */
+            padding: 8px 12px;
+            border-bottom: 1px solid #3a3f45;
+             display: flex;
+             flex-wrap: wrap;
+             gap: 6px 18px; /* Row and column gap */
+             align-items: center;
         }
         .measurement-history-entry:last-child { border-bottom: none; }
-        /* 171. Alternating Row Colors */
         .measurement-history-entry:nth-child(odd) { background-color: rgba(0,0,0,0.1); }
-        .measurement-history-entry .timestamp { font-weight: 500; color: #adb5bd; min-width: 100px;}
-        .measurement-history-entry .humidity,
-        .measurement-history-entry .temperature,
-        .measurement-history-entry .pump-info,
-         .measurement-history-entry .stage-info { white-space: nowrap; }
-        .measurement-history-entry i { margin-right: 4px; opacity: 0.8; } /* 14. History Entry Icons */
+        .measurement-history-entry .timestamp { font-weight: 500; color: var(--gn-text-muted); min-width: 80px; flex-shrink: 0;}
+        .measurement-history-entry .data-point { white-space: nowrap; }
+        .measurement-history-entry .data-point i { margin-right: 5px; opacity: 0.8; width: 1em; text-align: center;}
+        .measurement-history-entry .pump-info { color: var(--gn-warning); } /* Yellow for pump action */
+        .measurement-history-entry .stage-info { color: var(--gn-success); } /* Green for stage */
 
 
         /* Chart Container */
         #measurementChartContainer {
              position: relative;
-             height: 300px; /* Fixed height for the chart container */
+             height: 350px; /* Match history height */
              width: 100%;
+             background: var(--gn-card-bg); /* Match widget bg */
+             padding: 1rem;
+             border-radius: var(--gn-border-radius);
+             box-shadow: var(--gn-box-shadow);
         }
         #measurementChart { max-width: 100%; }
 
         /* Loader Spinner */
         .loader {
-            border: 3px solid #f3f3f3; /* Light grey */
+            border: 3px solid rgba(255,255,255,0.3); /* Lighter border for dark mode */
             border-top: 3px solid var(--gn-primary); /* Blue */
             border-radius: 50%;
             width: 18px;
             height: 18px;
-            animation: spin 1.5s linear infinite;
+            animation: spin 1s linear infinite;
             display: inline-block;
-            vertical-align: middle;
         }
         @keyframes spin {
             0% { transform: rotate(0deg); }
@@ -212,15 +253,16 @@
              top: 0;
              left: 0;
              width: 100%;
-             height: 4px; /* Thin bar */
+             height: 3px; /* Thinner bar */
              background-color: var(--gn-primary);
-             z-index: 9999;
-             display: none; /* Hidden by default */
-             animation: pulse 1s infinite alternate;
+             z-index: 10000; /* High z-index */
+             display: none;
+             animation: pulse-loader 1.2s infinite alternate;
+             box-shadow: 0 0 10px var(--gn-primary);
          }
-         @keyframes pulse {
-              from { opacity: 0.6; }
-              to { opacity: 1; }
+         @keyframes pulse-loader {
+              from { opacity: 0.5; width: 0%; }
+              to { opacity: 1; width: 100%; }
          }
 
         /* Toast Notifications Container */
@@ -228,36 +270,45 @@
             position: fixed;
             top: 70px; /* Below navbar */
             right: 20px;
-            z-index: 1050; /* Above most elements */
-             width: 300px;
+            z-index: 1055; /* Above most elements, below modals if any */
+             width: 320px; /* Slightly wider */
         }
-         .toast { transition: opacity 0.5s ease-out; opacity: 0; } /* 165, 195 */
-         .toast.show { opacity: 1; }
-         .toast .btn-close { filter: invert(1) grayscale(100%) brightness(200%); } /* Make close button visible */
+         .toast {
+             border-radius: var(--gn-border-radius);
+             box-shadow: 0 3px 10px rgba(0,0,0,0.3);
+             opacity: 0;
+             transition: opacity 0.3s ease-in-out, transform 0.3s ease-in-out;
+             transform: translateX(100%);
+         }
+         .toast.show {
+             opacity: 1;
+             transform: translateX(0);
+         }
+         .toast .btn-close { filter: invert(1) grayscale(100%) brightness(200%); }
+         .toast-header { background-color: rgba(0,0,0,0.2); color: var(--gn-light);}
+         .toast-body { font-size: 0.9rem; }
+         .toast-body i { margin-right: 8px; }
 
 
         /* Utilities */
-        .text-muted { color: #adb5bd !important; }
+        .text-muted { color: var(--gn-text-muted) !important; }
          .text-success { color: var(--gn-success) !important; }
          .text-info { color: var(--gn-info) !important; }
          .text-warning { color: var(--gn-warning) !important; }
          .text-danger { color: var(--gn-danger) !important; }
          .text-primary { color: var(--gn-primary) !important; }
 
-         .bg-success { background-color: var(--gn-success) !important; }
-         .bg-info { background-color: var(--gn-info) !important; }
-         .bg-warning { background-color: var(--gn-warning) !important; }
-         .bg-danger { background-color: var(--gn-danger) !important; }
-         .bg-primary { background-color: var(--gn-primary) !important; }
+         .bg-success-light { background-color: rgba(var(--bs-success-rgb), 0.2) !important; }
+         /* Add more light backgrounds if needed */
 
 
         /* Accessibility */
         *:focus-visible {
-            outline: 2px solid var(--gn-primary); /* Consistent visible focus */
+            outline: 2px solid var(--gn-primary);
             outline-offset: 2px;
-             box-shadow: none; /* Override default bootstrap focus if needed */
+             box-shadow: none;
         }
-        /* 125. Reduce Motion */
+        /* Reduce Motion */
         @media (prefers-reduced-motion: reduce) {
           * {
             animation-duration: 0.01ms !important;
@@ -265,79 +316,110 @@
             transition-duration: 0.01ms !important;
             scroll-behavior: auto !important;
           }
+          .loader { animation: none; border-width: 3px; } /* Static spinner */
+          #globalLoader { animation: none; opacity: 0.8; }
+          .pulsing { animation: none; }
         }
 
         /* Custom pulsing effect for pump indicator */
          .pulsing {
-            animation: pulse-animation 1.5s infinite;
+             animation: pulse-border 1.5s infinite ease-out;
          }
-         @keyframes pulse-animation {
-           0% { box-shadow: 0 0 0 0 rgba(var(--gn-success), 0.7); }
-           70% { box-shadow: 0 0 0 10px rgba(var(--gn-success), 0); }
-           100% { box-shadow: 0 0 0 0 rgba(var(--gn-success), 0); }
+         @keyframes pulse-border {
+           0% { box-shadow: 0 0 0 0 rgba(var(--bs-success-rgb), 0.7); }
+           70% { box-shadow: 0 0 0 8px rgba(var(--bs-success-rgb), 0); }
+           100% { box-shadow: 0 0 0 0 rgba(var(--bs-success-rgb), 0); }
          }
 
          /* Subtle update flash */
          .updated {
-             animation: flash-animation 0.5s ease-out;
+             animation: flash-bg 0.6s ease-out;
          }
-         @keyframes flash-animation {
-             0% { background-color: rgba(var(--gn-primary-rgb), 0.3); } /* Assuming --gn-primary-rgb is defined or use a fixed color */
+         @keyframes flash-bg {
+             0% { background-color: rgba(var(--bs-primary-rgb), 0.2); }
              100% { background-color: transparent; }
          }
 
          /* Tooltip styling */
          .tooltip-inner {
-             background-color: #000; /* Black background */
-             color: #fff; /* White text */
-             border-radius: 0.25rem;
-             padding: 5px 10px;
-             font-size: 0.8rem;
+             background-color: #000;
+             color: #fff;
+             border-radius: var(--gn-border-radius);
+             padding: 6px 12px;
+             font-size: 0.85rem;
+             box-shadow: 0 2px 5px rgba(0,0,0,0.3);
          }
          .tooltip.bs-tooltip-auto[data-popper-placement^=top] .tooltip-arrow::before,
-         .tooltip.bs-tooltip-top .tooltip-arrow::before {
-             border-top-color: #000; /* Match arrow color */
-         }
-          /* Add similar rules for bottom, left, right arrows if needed */
+         .tooltip.bs-tooltip-top .tooltip-arrow::before { border-top-color: #000; }
+         .tooltip.bs-tooltip-auto[data-popper-placement^=bottom] .tooltip-arrow::before,
+         .tooltip.bs-tooltip-bottom .tooltip-arrow::before { border-bottom-color: #000; }
+         .tooltip.bs-tooltip-auto[data-popper-placement^=left] .tooltip-arrow::before,
+         .tooltip.bs-tooltip-left .tooltip-arrow::before { border-left-color: #000; }
+          .tooltip.bs-tooltip-auto[data-popper-placement^=right] .tooltip-arrow::before,
+         .tooltip.bs-tooltip-right .tooltip-arrow::before { border-right-color: #000; }
 
 
           /* History Scrollbar (Webkit only) */
-          #measurementHistory::-webkit-scrollbar { /* 170 */
+          #measurementHistory::-webkit-scrollbar {
               width: 8px;
           }
           #measurementHistory::-webkit-scrollbar-track {
-              background: #2c3034; /* Match history background */
+              background: rgba(0,0,0,0.1);
+              border-radius: 4px;
           }
           #measurementHistory::-webkit-scrollbar-thumb {
-              background-color: #555; /* Darker gray handle */
+              background-color: var(--gn-secondary);
               border-radius: 4px;
-              border: 2px solid #2c3034; /* Creates padding around thumb */
+              border: 2px solid transparent; /* Creates padding */
+              background-clip: content-box; /* Important */
           }
            #measurementHistory::-webkit-scrollbar-thumb:hover {
-               background-color: #777; /* Lighter on hover */
+               background-color: #888;
            }
 
-         /* 183. Divider Lines */
+         /* Divider Lines */
          hr {
-             border-top: 1px solid #495057;
-             margin: 1.5rem 0;
+             border-top: 1px solid var(--gn-border-color);
+             margin: 2rem 0; /* More spacing */
+             opacity: 0.5;
          }
 
+         /* Specific adjustments */
+         #currentStageParams { font-size: 0.8rem; line-height: 1.3; }
+         #manualControlIndicator { font-size: 0.75rem; padding: 0.2em 0.5em;}
+         .widget-title i.fa-info-circle { cursor: help; }
+
+         /* System Restarting Overlay */
+         body.system-restarting::before {
+             content: "System Restarting... Please Wait";
+             position: fixed;
+             top: 0;
+             left: 0;
+             width: 100%;
+             height: 100%;
+             background-color: rgba(0, 0, 0, 0.7);
+             color: white;
+             display: flex;
+             justify-content: center;
+             align-items: center;
+             font-size: 1.5rem;
+             z-index: 10001; /* Above global loader */
+             backdrop-filter: blur(3px);
+         }
 
     </style>
 </head>
 <!-- Add ARIA live region container -->
 <body class="hold-transition sidebar-mini layout-fixed dark-mode">
-    <div id="globalLoader"></div> <!-- 56. Global Loading Indicator -->
-    <div id="toastContainer"></div> <!-- 57. Toast Container -->
+    <div id="globalLoader"></div>
+    <div id="toastContainer" aria-live="polite" aria-atomic="true"></div>
 
     <!-- Skip Link for Accessibility -->
-    <a href="#main-content" class="visually-hidden-focusable">Skip to main content</a> <!-- 108 -->
+    <a href="#main-content" class="visually-hidden-focusable">Skip to main content</a>
 
-    <nav class="navbar navbar-expand-lg navbar-dark"> <!-- Removed bg-dark, handled by custom CSS -->
+    <nav class="navbar navbar-expand-lg navbar-dark">
         <div class="container-fluid">
             <a class="navbar-brand d-flex align-items-center" href="index.html">
-                <!-- 146. Optimized SVG -->
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="30" height="30" aria-hidden="true" focusable="false">
                   <style>.leaf{fill:#2ecc71}.stem{stroke:#27ae60;stroke-width:4;stroke-linecap:round}</style>
                   <path class="leaf" d="M50 10 C20 40 30 70 50 90 C70 70 80 40 50 10z"/>
@@ -353,34 +435,34 @@
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav ms-auto">
-                    <li class="nav-item"><a class="nav-link active" href="index.html" aria-current="page">Dashboard</a></li> <!-- 123. ARIA Current -->
-                    <li class="nav-item"><a class="nav-link" href="calendar-html.html">Harvest Helper</a></li>
+                    <li class="nav-item"><a class="nav-link active" href="index.html" aria-current="page">Dashboard</a></li>
+                    <!-- <li class="nav-item"><a class="nav-link" href="#">Settings</a></li> -->
+                    <!-- <li class="nav-item"><a class="nav-link" href="calendar-html.html">Harvest Helper</a></li> -->
                 </ul>
             </div>
         </div>
     </nav>
 
     <div class="wrapper">
-        <!-- 105. Semantic HTML: Use <main> -->
-        <main class="content-wrapper" id="main-content"> <!-- Add ID for skip link -->
+        <main class="content-wrapper" id="main-content">
             <section class="content-header">
                 <div class="container-fluid">
-                    <div class="row mb-4 mt-2"> <!-- Adjusted margins -->
+                    <div class="row mb-4 mt-2">
                         <div class="col-12"><h1>Green Nanny Dashboard</h1></div>
                     </div>
                 </div>
             </section>
             <section class="content">
                 <div class="container-fluid">
-                    <!-- Row 1: Key Sensor Data -->
-                    <div class="row gy-4"> <!-- Use gy-4 for vertical gutter spacing -->
+                    <!-- Row 1: Key Sensor Data & Stage -->
+                    <div class="row gy-4">
                         <div class="col-lg-3 col-md-6" id="tempWidget">
                             <div class="small-box">
                                 <div class="inner">
                                     <h3 id="temperature">- °C</h3>
                                     <p>Ambient Temperature</p>
                                 </div>
-                                <div class="icon"><i class="fas fa-thermometer-half"></i></div>
+                                <div class="icon"><i class="fas fa-thermometer-half" aria-hidden="true"></i></div>
                             </div>
                         </div>
                         <div class="col-lg-3 col-md-6" id="humidWidget">
@@ -389,25 +471,26 @@
                                     <h3 id="humidity">- %</h3>
                                     <p>Ambient Humidity</p>
                                 </div>
-                                 <div class="icon"><i class="fas fa-tint"></i></div>
+                                 <div class="icon"><i class="fas fa-tint" aria-hidden="true"></i></div>
                             </div>
                         </div>
-                        <div class="col-lg-3 col-md-6" id="threshWidget">
+                        <div class="col-lg-3 col-md-6" id="stageWidget">
                             <div class="small-box">
                                 <div class="inner">
-                                    <h3 id="humidityThreshold">- %</h3>
-                                    <p>Humidity Threshold</p>
+                                    <h3 id="currentStageLabel" class="fs-5 mb-1">-</h3> <!-- Smaller font for stage name -->
+                                    <p>Current Plant Stage</p>
+                                    <small id="currentStageParams" class="d-block text-muted"></small>
                                 </div>
-                                <div class="icon"><i class="fas fa-sliders-h"></i></div>
+                                <div class="icon"><i class="fas fa-seedling" aria-hidden="true"></i></div>
                             </div>
                         </div>
                         <div class="col-lg-3 col-md-6" id="pumpCountWidget">
                             <div class="small-box">
                                 <div class="inner">
                                     <h3 id="pumpActivationCount">-</h3>
-                                    <p>Total Pump Activations</p>
+                                    <p>Total Pump Cycles</p>
                                 </div>
-                                <div class="icon"><i class="fas fa-sync-alt"></i></div> <!-- Changed icon -->
+                                <div class="icon"><i class="fas fa-play-circle" aria-hidden="true"></i></div>
                             </div>
                         </div>
                     </div>
@@ -416,26 +499,27 @@
                      <div class="row gy-4">
                         <div class="col-lg-4 col-md-6">
                             <div class="widget-dark">
-                                <div class="widget-title d-flex justify-content-between align-items-center">
-                                     <span>VPD <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="Vapor Pressure Deficit: relates to plant transpiration rate."></i></span> <!-- 7. VPD Explanation -->
+                                <div class="widget-title">
+                                     <span>VPD</span>
+                                     <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="Vapor Pressure Deficit (kPa): Indicates plant transpiration potential. Ideal range varies by stage."></i>
                                 </div>
-                                <div class="widget-body"><h3 id="vpd">- Kpa</h3></div>
+                                <div class="widget-body"><h3 id="vpd">- kPa</h3></div>
                             </div>
                         </div>
                          <div class="col-lg-4 col-md-6">
                             <div class="widget-dark">
-                                <div class="widget-title">System Elapsed Time</div> <!-- 6. Elapsed Time Format (handled by JS) -->
+                                <div class="widget-title">System Uptime</div>
                                 <div class="widget-body"><h3 id="totalElapsedTime">-</h3></div>
                             </div>
                         </div>
-                        <div class="col-lg-4 col-md-12"> <!-- Span full width on medium -->
+                        <div class="col-lg-4 col-md-12">
                              <div class="widget-dark">
                                  <div class="widget-title">System Status</div>
                                  <div class="widget-body">
-                                     <p><strong>Pump Status:</strong> <span id="pumpStatusIndicator" class="badge bg-secondary">OFF</span></p> <!-- 9. Pump Status Indicator -->
-                                     <p><strong>Last Reading:</strong> <span id="lastMeasurementTime" class="text-muted">-</span></p> <!-- 10. Last Measurement Time -->
-                                      <!-- Add WiFi Status, etc. if data available -->
-                                     <!-- <p><strong>WiFi:</strong> <span id="wifiStatus" class="text-muted">Checking...</span></p> -->
+                                     <p class="mb-1"><strong>Pump:</strong> <span id="pumpStatusIndicator" class="badge bg-secondary">OFF</span></p>
+                                     <p class="mb-1"><strong>Mode:</strong> <span id="stageModeIndicator" class="badge bg-info">Auto</span></p>
+                                     <p class="mb-1"><strong>WiFi:</strong> <span id="wifiStatus" class="text-muted"><i class="fas fa-wifi text-secondary"></i> Checking...</span></p>
+                                     <p class="mb-0"><strong>Last Reading:</strong> <small id="lastMeasurementTime" class="text-muted">-</small></p>
                                  </div>
                              </div>
                          </div>
@@ -444,104 +528,94 @@
                     <!-- Row 3: Chart & History -->
                     <div class="row gy-4">
                         <div class="col-lg-7">
-                            <div class="widget-dark">
-                                <div class="widget-title">Sensor Reading History</div>
-                                <div class="widget-body">
-                                     <div id="measurementChartContainer"> <!-- Container for sizing -->
-                                        <canvas id="measurementChart" aria-label="Line chart showing temperature and humidity history"></canvas> <!-- 114. Chart Accessibility (basic label) -->
-                                     </div>
-                                </div>
-                            </div>
+                             <!-- Chart container moved outside widget for title -->
+                             <h2 class="h4 mb-2">Sensor Reading History</h2>
+                             <div id="measurementChartContainer">
+                                <canvas id="measurementChart" role="img" aria-label="Line chart showing temperature (red) and humidity (blue) history. Yellow triangles indicate pump activations."></canvas>
+                             </div>
                         </div>
                         <div class="col-lg-5">
                             <div class="widget-dark">
-                                <div class="widget-title">Measurement Log (Last 50)</div>
-                                <!-- 115, 101. ARIA log and live region -->
-                                <div class="widget-body"><div id="measurementHistory" role="log" aria-live="polite">
-                                     <div class='measurement-history-entry text-muted'>Loading history...</div> <!-- Initial state -->
-                                </div></div>
+                                <div class="widget-title">Measurement Log (Recent)</div>
+                                <div class="widget-body">
+                                    <div id="measurementHistory" role="log" aria-live="polite">
+                                         <div class='measurement-history-entry text-muted'>Loading history...</div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
 
-                    <hr/> <!-- 183. Divider -->
+                    <hr/>
 
-                    <!-- Row 4: Controls -->
+                    <!-- Row 4: Controls & Settings -->
+                    <h2 class="h4 mb-3">Controls & Settings</h2>
                     <div class="row gy-4">
-                        <!-- Column 1: Settings & Stage Control -->
+                        <!-- Column 1: Stage & Interval Settings -->
                         <div class="col-lg-6">
-                            <!-- Threshold Setting -->
-                            <div class="widget-dark mb-4">
-                                 <!-- 116. Fieldset/Legend -->
-                                <fieldset>
-                                    <legend class="widget-title">Humidity Threshold Setting</legend>
-                                    <div class="widget-body">
-                                        <form id="humidityForm" class="row gx-2 gy-2 align-items-center">
-                                            <div class="col-auto flex-grow-1">
-                                                <label for="umbral" class="visually-hidden">Humidity Threshold (%)</label> <!-- 115 -->
-                                                <div class="input-group">
-                                                    <input type="number" name="umbral" id="umbral" class="form-control" placeholder="Set threshold (0-100)" min="0" max="100" required aria-describedby="umbralHelp" aria-label="Humidity threshold percentage"/> <!-- 112, 115 -->
-                                                     <span class="input-group-text">%</span> <!-- 30. Threshold Input Units -->
-                                                </div>
-                                                 <div id="umbralHelp" class="form-text text-muted">Device will try to water if humidity drops below this value during the current plant stage.</div> <!-- 103. ARIA Describedby -->
-                                            </div>
-                                            <div class="col-auto">
-                                                <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Set Threshold</button> <!-- 42. Button Text -->
-                                            </div>
-                                        </form>
-                                    </div>
-                                </fieldset>
-                            </div>
+                             <fieldset class="widget-dark">
+                                 <legend class="widget-title">
+                                      <span>Plant Stage Control</span>
+                                      <span id="manualControlIndicator" class="badge bg-warning text-dark" style="display: none;">Manual Mode Active</span>
+                                 </legend>
+                                <div class="widget-body">
+                                     <div class="mb-3">
+                                         <!-- Current stage info moved to small-box -->
+                                         <!-- Current Stage: <strong id="currentStageLabel" class="text-info">-</strong> -->
+                                         <!-- <small id="currentStageParams" class="d-block text-muted"></small> -->
+                                     </div>
+                                    <form id="manualStageForm" class="row gx-2 gy-2 align-items-center mb-3">
+                                        <div class="col-sm-8">
+                                            <label for="manualStageSelect" class="visually-hidden">Select Manual Stage</label>
+                                            <select id="manualStageSelect" class="form-select form-select-sm" aria-label="Select plant stage for manual control">
+                                                 <option value="" disabled selected>Loading stages...</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-sm-4">
+                                            <button type="submit" class="btn btn-secondary btn-sm w-100"><i class="fas fa-user-cog"></i> Set Manual</button>
+                                        </div>
+                                    </form>
+                                    <button class="btn btn-outline-danger btn-sm" id="resetManualStageButton" data-bs-toggle="tooltip" title="Return to automatic stage progression based on time.">
+                                         <i class="fas fa-undo"></i> Reset to Auto
+                                     </button>
+                                     <button class="btn btn-sm btn-outline-info ms-2 p-1" id="refreshStage" data-bs-toggle="tooltip" title="Refresh current stage info" aria-label="Refresh Stage Info">
+                                            <i class="fas fa-sync"></i>
+                                     </button>
+                                </div>
+                            </fieldset>
 
-                            <!-- Manual Stage Control -->
-                            <div class="widget-dark">
-                                <fieldset>
-                                     <legend class="widget-title d-flex justify-content-between align-items-center">
-                                          <span>Plant Stage Control</span>
-                                          <span id="manualControlIndicator" class="badge bg-warning text-dark" style="display: none;">Manual Mode Active</span> <!-- 22. Manual Stage Info -->
-                                     </legend>
-                                    <div class="widget-body">
-                                        <div class="mb-3">
-                                             Current Stage: <strong id="currentStageLabel" class="text-info">-</strong>
-                                             <small id="currentStageParams" class="d-block text-muted" style="display: none;"></small> <!-- 23. Stage Details -->
-                                             <button class="btn btn-sm btn-outline-secondary ms-2 p-1" id="refreshStage" data-bs-toggle="tooltip" title="Refresh current stage info"> <!-- 94 -->
-                                                 <i class="fas fa-sync"></i>
-                                             </button>
-                                         </div>
-                                        <form id="manualStageForm" class="row gx-2 gy-2 align-items-center mb-3">
-                                            <div class="col-sm-8">
-                                                <label for="manualStageSelect" class="visually-hidden">Select Manual Stage</label>
-                                                <select id="manualStageSelect" class="form-select" aria-label="Select plant stage for manual control">
-                                                    <!-- Options populated by JS (populateStageSelector) -->
-                                                     <option value="" disabled selected>Loading stages...</option>
-                                                </select>
+                            <fieldset class="widget-dark">
+                                <legend class="widget-title">Measurement Interval</legend>
+                                <div class="widget-body">
+                                    <form id="intervalForm" class="row gx-2 gy-2 align-items-center">
+                                        <div class="col-auto flex-grow-1">
+                                            <label for="intervalInput" class="visually-hidden">Measurement Interval (Hours)</label>
+                                            <div class="input-group input-group-sm">
+                                                <input type="number" name="interval" id="intervalInput" class="form-control" placeholder="Hours" min="1" max="168" required aria-describedby="intervalHelp" aria-label="Measurement interval in hours"/>
+                                                 <span class="input-group-text">Hours</span>
                                             </div>
-                                            <div class="col-sm-4">
-                                                <button type="submit" class="btn btn-secondary w-100"><i class="fas fa-user-cog"></i> Set Manual</button>
-                                            </div>
-                                        </form>
-                                        <button class="btn btn-outline-danger btn-sm" id="resetManualStageButton" data-bs-toggle="tooltip" title="Return to automatic stage progression based on time."> <!-- 85 -->
-                                             <i class="fas fa-undo"></i> Reset to Auto
-                                         </button>
-                                    </div>
-                                </fieldset>
-                            </div>
+                                             <div id="intervalHelp" class="form-text">Set how often measurements are taken (1-167 hours). Current: <span id="currentInterval">-</span>h</div>
+                                        </div>
+                                        <div class="col-auto">
+                                            <button type="submit" class="btn btn-primary btn-sm"><i class="fas fa-save"></i> Set Interval</button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </fieldset>
                         </div>
 
                         <!-- Column 2: Actions -->
                         <div class="col-lg-6">
-                            <div class="widget-dark">
-                                <fieldset>
-                                    <legend class="widget-title">System Actions</legend>
-                                    <div class="widget-body d-grid gap-2"> <!-- Use d-grid for easy equal width buttons -->
-                                        <button id="activatePump" class="btn btn-success btn-lg"><i class="fas fa-play-circle"></i> Activate Pump...</button> <!-- 61 -->
-                                        <button id="deactivatePump" class="btn btn-warning btn-lg"><i class="fas fa-stop-circle"></i> Deactivate Pump</button> <!-- 61, 86 -->
-                                        <button id="takeMeasurement" class="btn btn-info btn-lg"><i class="fas fa-ruler-combined"></i> Trigger Measurement</button> <!-- 62 -->
-                                        <button id="clearMeasurements" class="btn btn-danger btn-lg"><i class="fas fa-trash-alt"></i> Clear History</button> <!-- 63, 83 -->
-                                        <button id="restartSystem" class="btn btn-outline-danger btn-lg"><i class="fas fa-power-off"></i> Restart System</button> <!-- 64, 84 -->
-                                    </div>
-                                </fieldset>
-                            </div>
+                            <fieldset class="widget-dark">
+                                <legend class="widget-title">System Actions</legend>
+                                <div class="widget-body d-grid gap-2">
+                                    <button id="activatePump" class="btn btn-success"><i class="fas fa-play-circle"></i> Activate Pump Manually...</button>
+                                    <button id="deactivatePump" class="btn btn-warning"><i class="fas fa-stop-circle"></i> Deactivate Pump Now</button>
+                                    <button id="takeMeasurement" class="btn btn-info"><i class="fas fa-ruler-combined"></i> Trigger Measurement Now</button>
+                                    <button id="clearMeasurements" class="btn btn-danger"><i class="fas fa-trash-alt"></i> Clear Measurement History</button>
+                                    <button id="restartSystem" class="btn btn-outline-danger"><i class="fas fa-power-off"></i> Restart System</button>
+                                </div>
+                            </fieldset>
                         </div>
                     </div>
 
@@ -551,53 +625,33 @@
         </main>
         <!-- /.content-wrapper -->
 
-         <!-- 154. Footer -->
-         <footer class="main-footer bg-dark text-center text-muted py-3">
-             <small>Green Nanny v1.0 | Device IP: <span id="deviceIP">-</span> <!-- 26 --> | <a href="#" onclick="location.reload();">Refresh Page</a></small>
+         <footer class="main-footer bg-dark text-center text-muted py-3 mt-auto">
+             <small>Green Nanny v1.1 | Device IP: <span id="deviceIP">-</span> | <a href="#" onclick="event.preventDefault(); location.reload();">Refresh Page</a></small>
          </footer>
 
     </div>
     <!-- ./wrapper -->
 
     <!-- REQUIRED SCRIPTS -->
-    <!-- jQuery (AdminLTE might still need it) -->
+    <!-- jQuery (Optional but AdminLTE might still use it) -->
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <!-- Bootstrap 5 Bundle with Popper -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-ka7Sk0Gln4gmtz2MlQnikT1wXgYsOg+OMhuP+IlRH9sENBO0LRn5q+8nbTov4+1p" crossorigin="anonymous"></script>
     <!-- AdminLTE App -->
     <script src="https://cdn.jsdelivr.net/npm/admin-lte@3.1/dist/js/adminlte.min.js"></script>
-    <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.0/dist/chart.min.js"></script> <!-- Updated Chart.js version -->
-    <!-- Font Awesome JS (Optional, if needed for JS manipulation) -->
-    <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/js/all.min.js"></script> -->
+    <!-- Chart.js 3.x -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.1/dist/chart.min.js" integrity="sha256-ErZ09KkZnzjpqcane4SCyyHsKAXMvID9/xwbl/Aq1pc=" crossorigin="anonymous"></script>
 
-    <!-- Your app.js unificado -->
-    <script src="js/app.js" type="module"></script>
-
-    <!-- Inline script to get IP (example - real IP needs backend support) -->
+    <!-- Your app.js (ensure it's served from LittleFS or accessible) -->
+     <!-- <script src="/js/app.js"></script> --> <!-- If in /js/app.js on LittleFS -->
      <script>
-         // Attempt to display local IP if available (this usually requires backend cooperation)
-         // This simple JS approach might only get the client's view, not the device IP
-         // const ipElement = document.getElementById('deviceIP');
-         // if (ipElement) ipElement.textContent = window.location.hostname || 'Unknown';
-         // A better way: Include it in the /data response from main.cpp
-         async function fetchIp() {
-            try {
-                const response = await fetch('http://192.168.0.78/data'); // Replace with actual base URL
-                const data = await response.json();
-                const ipElement = document.getElementById('deviceIP');
-                if (ipElement && data && data.deviceIP) { // Assume /data returns deviceIP
-                    ipElement.textContent = data.deviceIP;
-                } else if (ipElement) {
-                     ipElement.textContent = window.location.hostname || 'N/A';
-                }
-            } catch(e) {
-                 const ipElement = document.getElementById('deviceIP');
-                 if (ipElement) ipElement.textContent = window.location.hostname || 'Error';
-            }
-         }
-         document.addEventListener('DOMContentLoaded', fetchIp);
+         // Embed app.js content directly here if not serving separately
+         // --- START OF EMBEDDED app.js ---
+         // (Paste the content of the modified app.js here)
+         // --- END OF EMBEDDED app.js ---
      </script>
+     <script type="module" src="js/app.js"></script> <!-- If serving app.js from root -->
+
 
 </body>
 </html>

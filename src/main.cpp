@@ -10,7 +10,7 @@
 #define DHTTYPE DHT11
 #define BOMBA_PIN D3
 
-#define MAX_JSON_OBJECTS 500
+#define MAX_JSON_OBJECTS 500 // Max measurements to store
 
 // Configuración de DNS y Captive Portal
 DNSServer dnsServer;
@@ -19,14 +19,11 @@ const byte DNS_PORT = 53;
 // Servidor web en el puerto 80
 ESP8266WebServer server(80);
 
-// Documentos JSON
-StaticJsonDocument<200> jsonDocument;
-
 // Almacenamiento de mediciones
 String measurements[MAX_JSON_OBJECTS];
 int jsonIndex = 0;
 
-// Configuración de red estática
+// Configuración de red estática (si se usan credenciales guardadas)
 IPAddress ip(192, 168, 0, 78);
 IPAddress gateway(192, 168, 0, 1);
 IPAddress subnet(255, 255, 255, 0);
@@ -35,8 +32,8 @@ IPAddress subnet(255, 255, 255, 0);
 unsigned long startTime = 0;
 unsigned long lastDebugPrint = 0;
 
-// Simulación de sensores
-bool simulateSensors = false;
+// Simulación de sensores (poner en false para usar el sensor real)
+bool simulateSensors = false; // CAMBIAR A false PARA USO REAL
 float simulatedHumidity = 55.0;
 float simulatedTemperature = 25.0;
 
@@ -45,84 +42,116 @@ DHT dht(DHTPIN, DHTTYPE);
 
 // Control de la bomba
 int pumpActivationCount = 0;
-unsigned long pumpOnTime = 0;
-unsigned long pumpDurationMs = 30000; 
-bool pumpAutoOff = false; 
-bool pumpActivated = false; 
-unsigned long lastSecondPrint = 0;
-int pumpSecondsCount = 0;
+unsigned long pumpOnTime = 0;      // Timestamp when pump was turned on (for auto-off)
+unsigned long pumpDurationMs = 0;  // How long the pump should stay on (set by activatePump)
+bool pumpAutoOff = false;          // Flag: Is the pump expected to turn off automatically?
+bool pumpActivated = false;        // Flag: Is the pump currently ON?
+unsigned long lastSecondPrint = 0; // For printing debug seconds while pump is on
+int pumpSecondsCount = 0;          // Counter for debug seconds
 
 // Intervalo de mediciones (en horas)
-int measurementInterval = 3; // Por defecto 3 horas
-int nextMeasure = 0;
+int measurementInterval = 3; // Default 3 hours
+unsigned long nextMeasureTimestamp = 0; // Timestamp for next measurement check
 
 // Definición de etapas fenológicas
 struct Stage {
-  const char* name;
-  int duration_days;     // Días que dura la etapa
-  int humidityThreshold; // Umbral mínimo de humedad (%)
-  int wateringTimeSec;   // Tiempo de riego en segundos
+    const char* name;
+    int duration_days;     // Approx. days the stage lasts
+    int humidityThreshold; // Minimum humidity threshold (%) for this stage
+    int wateringTimeSec;   // Default watering time in seconds for this stage
 };
 
+// Array de Etapas
 Stage stages[] = {
-  {"Germinacion", 7, 60, 10},
-  {"Vegetativo", 14, 55, 20},
-  {"Prefloracion", 7, 50, 30},
-  {"Floracion", 30, 45, 30},
-  {"Maduracion", 10, 40, 15}
+    {"Germinacion", 7, 65, 15},   // Higher humidity needed initially
+    {"Vegetativo", 14, 60, 25},
+    {"Prefloracion", 7, 55, 35},
+    {"Floracion", 30, 50, 35},    // Lower humidity often preferred
+    {"Maduracion", 10, 45, 20}
 };
+const int numStages = sizeof(stages) / sizeof(stages[0]);
 
 // Variables para control manual de etapas
 bool manualStageControl = false;
-int manualStageIndex = 0;
+int manualStageIndex = 0; // Index in the stages array
 
-// Prototipos de funciones
-int getCurrentStage(int days);
-void activatePump(unsigned long durationMs = 30000);
-void deactivatePump();
-void loadMeasurementInterval();
-void saveMeasurementInterval(int interval);
-void handleWifiListRequest();
+// Variables de estado
+unsigned long lastMeasurementTimestamp = 0; // Track last successful measurement time
+
+// --- Prototipos de Funciones ---
+// Core Logic & Setup
+void setup();
+void loop();
 void setupDHTSensor();
-float getHumidity();
-float getTemperature();
 void setupBomba();
-String loadMeasurements();
-float calculateVPD(float temperature, float humidity);
-void handleData();
-void takeMeasurement();
-void handleConnectWifi();
-void handleSaveWifiCredentials();
-int parseData(String input, String output[]);
-String arrayToString(String array[], size_t arraySize);
-void saveMeasurementFile(String Measurement);
-void saveMeasurement(const String& jsonString);
-void formatMeasurementsToString(String& formattedString);
-void handleSaveMeasurement();
-void handleLoadMeasurement();
-void handleThresholdRequest();
-void loadWifiCredentials();
-void handleClearMeasurementHistory();
-void handleMeasurementInterval();
-void handlePumpControl();
 void setupServer();
 void startAPMode();
+// Network & Config
+void loadWifiCredentials();
+void handleConnectWifi(); // Manual connection attempt via UI
+void handleSaveWifiCredentials(); // Save credentials from UI
+void handleWifiListRequest(); // Scan and list networks
+// Time & Measurement
+void loadMeasurementInterval();
+void saveMeasurementInterval(int interval);
+void handleMeasurementInterval(); // Set/Get interval via API
+void takeMeasurement(); // Triggered by controlIndependiente or manually
+// Pump Control
+void activatePump(unsigned long durationMs);
+void deactivatePump();
+void handlePumpControl(); // Manual pump control via API
+// Stage Control
+int getCurrentStageIndex(unsigned long daysElapsed);
 void loadManualStage();
-void controlIndependiente();
+void saveManualStage(int index);
 void handleSetManualStage();
 void handleGetCurrentStage();
 void handleResetManualStage();
 void handleListStages();
-void handleSerialCommands();
+// Data Handling
+String loadMeasurements();
+void saveMeasurement(const String& jsonString);
+void saveMeasurementFile(const String& allMeasurementsString);
+int parseData(String input, String output[]); // Parses stored measurements string
+String arrayToString(String array[], size_t arraySize); // Converts array back to string for saving
+void formatMeasurementsToString(String& formattedString); // Formats for JSON array response
+void handleData(); // Main data endpoint
+void handleLoadMeasurement(); // Endpoint to get all stored measurements
+void handleClearMeasurementHistory(); // Endpoint to clear measurements
+// Utilities
+float getHumidity();
+float getTemperature();
+float calculateVPD(float temperature, float humidity);
+void handleSerialCommands(); // Optional serial control
+void controlIndependiente(); // Main automatic control logic
+
+
+// --- IMPLEMENTACIONES ---
 
 void setup() {
     Serial.begin(115200);
-    Serial.println("[SETUP] Iniciando sistema de riego con simulación de sensores.");
+    while (!Serial) {
+        ; // wait for serial port to connect. Needed for native USB
+    }
+    Serial.println("\n\n[SETUP] Iniciando Green Nanny v1.1...");
 
     // Montar el sistema de archivos
     if (!LittleFS.begin()) {
-        Serial.println("[ERROR] No se pudo montar LittleFS");
-        return;
+        Serial.println("[ERROR] Falló al montar LittleFS. Verifica formato.");
+        // No continuar sin FS
+        while (true) { delay(1000); }
+    } else {
+        Serial.println("[INFO] LittleFS montado correctamente.");
+        // List directory content for debugging
+        #ifdef ESP8266
+          Dir dir = LittleFS.openDir("/");
+          while (dir.next()) {
+            Serial.print("  FS File: "); Serial.print(dir.fileName());
+            File f = dir.openFile("r");
+            Serial.print(", Size: "); Serial.println(f.size());
+            f.close();
+          }
+        #endif
     }
 
     // Configurar el pin de la bomba
@@ -133,383 +162,517 @@ void setup() {
 
     // Tiempo de inicio
     startTime = millis();
+    lastMeasurementTimestamp = startTime; // Initialize last measurement time
+    Serial.print("[INFO] Hora de inicio del sistema (millis): "); Serial.println(startTime);
+
 
     // Cargar mediciones previas
-    parseData(loadMeasurements(), measurements);
+    jsonIndex = parseData(loadMeasurements(), measurements);
+    Serial.print("[INFO] Cargadas "); Serial.print(jsonIndex); Serial.println(" mediciones previas.");
 
     // Cargar intervalo de medición
     loadMeasurementInterval();
+    // Calcular la primera hora de medición programada (basado en el intervalo)
+    // We'll calculate nextMeasureTimestamp inside loop based on interval initially
+    nextMeasureTimestamp = startTime + (measurementInterval * 3600000UL); // First measure after interval from start
+    Serial.print("[INFO] Próxima medición programada inicialmente alrededor de millis: "); Serial.println(nextMeasureTimestamp);
 
-    // Cargar credenciales WiFi y conectar
-    loadWifiCredentials();
 
     // Cargar etapa manual si existe
     loadManualStage();
 
-    // Iniciar modo AP si no está conectado a WiFi
+    // Cargar credenciales WiFi y conectar si existen
+    loadWifiCredentials();
+
+    // Iniciar modo AP si no está conectado a WiFi después de intentar con credenciales guardadas
     if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[INFO] No conectado a WiFi después de intentar credenciales. Iniciando modo AP.");
         startAPMode();
+    } else {
+         Serial.println("[INFO] Conectado a WiFi.");
+         Serial.print("[INFO] IP Address: "); Serial.println(WiFi.localIP());
+         Serial.print("[INFO] RSSI: "); Serial.print(WiFi.RSSI()); Serial.println(" dBm");
+         dnsServer.stop(); // Stop DNS server if connected to WiFi
     }
 
     // Configurar el servidor web y endpoints
     setupServer();
 
-    Serial.println("[INFO] Setup completo, el sistema está listo para funcionar.");
+    Serial.println("[INFO] === Setup completo. Sistema listo. ===");
 }
 
 void loop() {
+    unsigned long now = millis();
+
     // Manejar clientes del servidor web
     server.handleClient();
 
-    // Procesar solicitudes DNS (captive portal)
-    dnsServer.processNextRequest();
+    // Procesar solicitudes DNS (solo si está en modo AP)
+    if (WiFi.getMode() == WIFI_AP) {
+      dnsServer.processNextRequest();
+    }
 
-    // Manejar comandos seriales para control manual
+    // Manejar comandos seriales para control manual (si está habilitado)
     handleSerialCommands();
 
-    unsigned long now = millis();
-
     // Apagar la bomba automáticamente si se cumplió el tiempo (autoOff)
-    if (pumpAutoOff && pumpActivated) {
-        if (now - pumpOnTime >= pumpDurationMs) {
-            deactivatePump();
-        }
+    if (pumpAutoOff && pumpActivated && (now - pumpOnTime >= pumpDurationMs)) {
+        Serial.println("[AUTO] Tiempo de riego (autoOff) cumplido.");
+        deactivatePump();
     }
 
-    // Contar segundos si la bomba está activada con autoOff
-    if (pumpActivated && pumpAutoOff) {
-        if (now - lastSecondPrint >= 1000) {
-            pumpSecondsCount++;
-            Serial.print("[INFO] Bomba activa (autoOff), segundo ");
-            Serial.println(pumpSecondsCount);
-            lastSecondPrint = now;
-        }
+    // Contar segundos si la bomba está activada con autoOff (para debug)
+    if (pumpActivated && pumpAutoOff && (now - lastSecondPrint >= 1000)) {
+        pumpSecondsCount++;
+        // Commented out for less verbose logging
+        // Serial.print("[DEBUG] Bomba activa (autoOff), segundo "); Serial.println(pumpSecondsCount);
+        lastSecondPrint = now;
     }
 
-    // Calcular tiempo transcurrido
-    unsigned long elapsedTime = (now - startTime) / 1000;
-    unsigned long totalElapsedTimeHours = elapsedTime / 3600;
-
-    // Verificar si es momento de tomar una medición
-    if ((int)totalElapsedTimeHours >= nextMeasure) {
-        Serial.println("[INFO] Se ha alcanzado la hora programada para la siguiente medición, preparándose para medir...");
-        controlIndependiente();
-        nextMeasure = totalElapsedTimeHours + measurementInterval;
-        Serial.print("[INFO] Próxima medición programada en ");
-        Serial.print(measurementInterval);
-        Serial.println(" horas");
+    // Verificar si es momento de tomar una medición programada
+    if (now >= nextMeasureTimestamp) {
+        Serial.println("[INFO] Hora de medición programada alcanzada.");
+        controlIndependiente(); // Ejecuta la lógica de medición y riego
+        // Programar la siguiente medición
+        nextMeasureTimestamp = now + (measurementInterval * 3600000UL); // Interval in milliseconds
+        Serial.print("[INFO] Próxima medición programada para millis: "); Serial.println(nextMeasureTimestamp);
     }
 
-    // Mensajes de debug cada 10 minutos
+    // Mensajes de debug periódicos (cada 10 minutos)
     if (now - lastDebugPrint >= 600000) { // 600000 ms = 10 minutos
         lastDebugPrint = now;
-        int remain = nextMeasure - (int)totalElapsedTimeHours;
-        Serial.print("[DEBUG] Estado actual: ");
-        if (remain > 0) {
-            Serial.print("Faltan ");
-            Serial.print(remain);
-            Serial.println(" horas para la próxima medición programada.");
+        unsigned long elapsedSeconds = (now - startTime) / 1000;
+        unsigned long remainingSeconds = (nextMeasureTimestamp > now) ? (nextMeasureTimestamp - now) / 1000 : 0;
+        unsigned long remainingHours = remainingSeconds / 3600;
+        unsigned long remainingMinutes = (remainingSeconds % 3600) / 60;
+
+        Serial.print("[DEBUG] Uptime: ");
+        Serial.print(elapsedSeconds / 86400); Serial.print("d ");
+        Serial.print((elapsedSeconds % 86400) / 3600); Serial.print("h ");
+        Serial.print((elapsedSeconds % 3600) / 60); Serial.println("m");
+
+        Serial.print("[DEBUG] Próxima medición en aprox: ");
+        Serial.print(remainingHours); Serial.print("h ");
+        Serial.print(remainingMinutes); Serial.println("m");
+        Serial.print("[DEBUG] Estado Bomba: "); Serial.print(pumpActivated ? "ON" : "OFF");
+        if (pumpAutoOff) Serial.print(" (Auto-Off)");
+        Serial.println();
+        Serial.print("[DEBUG] Memoria Libre: "); Serial.println(ESP.getFreeHeap());
+        if (WiFi.status() == WL_CONNECTED) {
+             Serial.print("[DEBUG] WiFi RSSI: "); Serial.print(WiFi.RSSI()); Serial.println(" dBm");
         } else {
-            Serial.println("La próxima medición se realizará muy pronto o ya se ha realizado.");
+             Serial.println("[DEBUG] WiFi: Desconectado");
         }
+
     }
 }
 
-// Función para determinar la etapa actual
-int getCurrentStage(int days) {
-    if (manualStageControl) {
-        Serial.print("[INFO] Control manual de etapa activado. Etapa actual: ");
-        Serial.println(stages[manualStageIndex].name);
-        return manualStageIndex;
-    }
-
-    int sum = 0;
-    for (int i = 0; i < (int)(sizeof(stages)/sizeof(stages[0])); i++) {
-        sum += stages[i].duration_days;
-        if (days <= sum) {
-            return i;
-        }
-    }
-    return (sizeof(stages)/sizeof(stages[0])) - 1; 
-}
-
-// Función para activar la bomba
-void activatePump(unsigned long durationMs) {
-    Serial.println("[ACCION] Activando bomba de riego (autoOff)... Preparada para apagarse sola.");
-    digitalWrite(BOMBA_PIN, HIGH);
-    pumpActivated = true;
-    pumpSecondsCount = 0;
-    lastSecondPrint = millis();
-    pumpOnTime = millis();
-    pumpDurationMs = durationMs;
-    pumpAutoOff = true;
-    pumpActivationCount++;
-}
-
-// Función para desactivar la bomba
-void deactivatePump() {
-    Serial.println("[ACCION] Desactivando la bomba de riego...");
-    digitalWrite(BOMBA_PIN, LOW);
-    pumpActivated = false;
-    pumpAutoOff = false;
-    pumpSecondsCount = 0;
-}
-
-// Carga el intervalo de medición desde el archivo
-void loadMeasurementInterval() {
-    File configFile = LittleFS.open("/interval.txt", "r");
-    if (!configFile) {
-        Serial.println("[INFO] No se encontró interval.txt, usando valor por defecto 3 horas");
-        measurementInterval = 3;
-        return;
-    }
-    String val = configFile.readStringUntil('\n');
-    val.trim();
-    measurementInterval = val.toInt();
-    if (measurementInterval <= 0) measurementInterval = 3;
-    configFile.close();
-    Serial.print("[INFO] Intervalo de medición cargado: ");
-    Serial.print(measurementInterval);
-    Serial.println(" horas");
-}
-
-// Guarda el intervalo de medición en el archivo
-void saveMeasurementInterval(int interval) {
-    File configFile = LittleFS.open("/interval.txt", "w");
-    if (!configFile) {
-        Serial.println("[ERROR] No se pudo guardar interval.txt");
-        return;
-    }
-    configFile.println(interval);
-    configFile.close();
-    measurementInterval = interval;
-    Serial.print("[INFO] Nuevo intervalo guardado: ");
-    Serial.print(measurementInterval);
-    Serial.println(" horas");
-}
-
-// Endpoint para listar redes WiFi disponibles
-void handleWifiListRequest() {
-    server.on("/wifiList", HTTP_GET, []() {
-        int numNetworks = WiFi.scanNetworks();
-        DynamicJsonDocument wifiJson(1024);
-        JsonArray networks = wifiJson.to<JsonArray>();
-        if (numNetworks > 0) {
-            for (int i = 0; i < numNetworks; ++i) {
-                JsonObject network = networks.createNestedObject();
-                network["ssid"] = WiFi.SSID(i);
-                network["rssi"] = WiFi.RSSI(i);
-            }
-        }
-        String response;
-        serializeJson(wifiJson, response);
-        server.send(200, "application/json", response);
-    });
-}
-
-// Inicializa el sensor DHT o usa valores simulados
+// Configura el sensor DHT
 void setupDHTSensor() {
-    Serial.println("[SETUP] Inicializando sensor DHT o usando valores simulados...");
+    Serial.println("[SETUP] Inicializando sensor DHT...");
     dht.begin();
-}
-
-// Obtener humedad (real o simulada)
-float getHumidity() {
-    if (simulateSensors) {
-        simulatedHumidity += (random(-10,10) / 10.0); 
-        if (simulatedHumidity < 30) simulatedHumidity = 30;
-        if (simulatedHumidity > 70) simulatedHumidity = 70;
-        Serial.print("[SIMULACION] Humedad simulada: ");
-        Serial.println(simulatedHumidity);
-        return simulatedHumidity;
+    // Perform a dummy read to check sensor
+    float initial_h = dht.readHumidity();
+    float initial_t = dht.readTemperature();
+    if (isnan(initial_h) || isnan(initial_t)) {
+        Serial.println("[WARN] No se pudo leer del sensor DHT al inicio. ¿Está conectado?");
+        if (!simulateSensors) {
+             Serial.println("[WARN] La simulación NO está activa. Las lecturas fallarán.");
+        }
     } else {
-        float h = dht.readHumidity();
-        if (isnan(h)) h = 0;
-        Serial.print("[SENSOR] Humedad leída: ");
-        Serial.println(h);
-        return h;
+         Serial.println("[INFO] Sensor DHT inicializado correctamente.");
     }
-}
 
-// Obtener temperatura (real o simulada)
-float getTemperature() {
-    if (simulateSensors) {
-        simulatedTemperature += (random(-5,5) / 10.0);
-        if (simulatedTemperature < 18) simulatedTemperature = 18;
-        if (simulatedTemperature > 30) simulatedTemperature = 30;
-        Serial.print("[SIMULACION] Temperatura simulada: ");
-        Serial.println(simulatedTemperature);
-        return simulatedTemperature;
-    } else {
-        float t = dht.readTemperature();
-        if (isnan(t)) t = 0;
-        Serial.print("[SENSOR] Temperatura leída: ");
-        Serial.println(t);
-        return t;
+    if(simulateSensors) {
+        Serial.println("[INFO] LA SIMULACIÓN DE SENSORES ESTÁ ACTIVA.");
     }
 }
 
 // Configura el pin de la bomba
 void setupBomba() {
-    Serial.println("[SETUP] Configurando el pin de la bomba...");
+    Serial.println("[SETUP] Configurando pin de la bomba (D3)...");
     pinMode(BOMBA_PIN, OUTPUT);
-    digitalWrite(BOMBA_PIN, LOW);
+    digitalWrite(BOMBA_PIN, LOW); // Ensure pump is off initially
+    pumpActivated = false;
+    pumpAutoOff = false;
 }
+
+// Obtiene la humedad (real o simulada)
+float getHumidity() {
+    if (simulateSensors) {
+        // Simulate some fluctuation
+        simulatedHumidity += (random(-20, 21) / 10.0); // +/- 2.0
+        if (simulatedHumidity < 30) simulatedHumidity = 30 + (random(0, 50) / 10.0);
+        if (simulatedHumidity > 95) simulatedHumidity = 95 - (random(0, 50) / 10.0);
+        Serial.print("[SIM] Humedad simulada: "); Serial.println(simulatedHumidity);
+        return simulatedHumidity;
+    } else {
+        float h = dht.readHumidity();
+        int retry = 0;
+        // Retry reading a few times if NaN
+        while (isnan(h) && retry < 3) {
+             Serial.println("[WARN] Falla lectura de humedad, reintentando...");
+             delay(500); // Wait before retry
+             h = dht.readHumidity();
+             retry++;
+        }
+        if (isnan(h)) {
+             Serial.println("[ERROR] Falla lectura de humedad después de reintentos.");
+             return -1.0; // Return an error indicator
+        } else {
+             Serial.print("[SENSOR] Humedad leída: "); Serial.println(h);
+             return h;
+        }
+    }
+}
+
+// Obtiene la temperatura (real o simulada)
+float getTemperature() {
+    if (simulateSensors) {
+        simulatedTemperature += (random(-10, 11) / 10.0); // +/- 1.0
+        if (simulatedTemperature < 15) simulatedTemperature = 15 + (random(0, 20) / 10.0);
+        if (simulatedTemperature > 35) simulatedTemperature = 35 - (random(0, 20) / 10.0);
+        Serial.print("[SIM] Temperatura simulada: "); Serial.println(simulatedTemperature);
+        return simulatedTemperature;
+    } else {
+        float t = dht.readTemperature();
+        int retry = 0;
+        // Retry reading a few times if NaN
+        while (isnan(t) && retry < 3) {
+             Serial.println("[WARN] Falla lectura de temperatura, reintentando...");
+             delay(500); // Wait before retry
+             t = dht.readTemperature();
+             retry++;
+        }
+        if (isnan(t)) {
+             Serial.println("[ERROR] Falla lectura de temperatura después de reintentos.");
+             return -99.0; // Return an error indicator
+        } else {
+             Serial.print("[SENSOR] Temperatura leída: "); Serial.println(t);
+             return t;
+        }
+    }
+}
+
+// Calcula el VPD (Déficit de Presión de Vapor) en kPa
+float calculateVPD(float temperature, float humidity) {
+    if (temperature <= -90.0 || humidity < 0.0) { // Check for invalid sensor readings
+        return -1.0; // Indicate error
+    }
+    // Formula using Magnus formula approximation
+    // Saturation Vapor Pressure (SVP) in kPa
+    float svp = 0.6108 * exp((17.27 * temperature) / (temperature + 237.3));
+    // Actual Vapor Pressure (AVP) in kPa
+    float avp = (humidity / 100.0) * svp;
+    // Vapor Pressure Deficit (VPD) in kPa
+    float vpd = svp - avp;
+    // Ensure VPD is not negative (can happen with minor sensor inaccuracies at high humidity)
+    return (vpd < 0) ? 0.0 : vpd;
+}
+
+
+// Función para determinar el índice de la etapa actual basado en días transcurridos
+int getCurrentStageIndex(unsigned long daysElapsed) {
+    if (manualStageControl) {
+        Serial.print("[INFO] Control manual activado. Usando etapa: ");
+        Serial.println(stages[manualStageIndex].name);
+        return manualStageIndex;
+    }
+
+    unsigned long cumulativeDays = 0;
+    for (int i = 0; i < numStages; i++) {
+        cumulativeDays += stages[i].duration_days;
+        if (daysElapsed <= cumulativeDays) {
+             Serial.print("[INFO] Calculado automático. Días: "); Serial.print(daysElapsed);
+             Serial.print(" -> Etapa: "); Serial.println(stages[i].name);
+            return i; // Return the index of the current stage
+        }
+    }
+    // If daysElapsed exceeds all stage durations, stay in the last stage
+    Serial.print("[INFO] Calculado automático. Días: "); Serial.print(daysElapsed);
+    Serial.print(" -> Etapa (última): "); Serial.println(stages[numStages - 1].name);
+    return numStages - 1;
+}
+
+// Función para activar la bomba
+void activatePump(unsigned long durationMs) {
+    if (pumpActivated) {
+        Serial.println("[WARN] La bomba ya está activada. Ignorando nueva activación.");
+        return;
+    }
+    if (durationMs <= 0) {
+        Serial.println("[WARN] Duración de riego inválida (<= 0 ms). No se activará la bomba.");
+        return;
+    }
+
+    Serial.print("[ACCION] Activando bomba por "); Serial.print(durationMs / 1000); Serial.println(" segundos (Auto-Off).");
+    digitalWrite(BOMBA_PIN, HIGH);
+    pumpActivated = true;
+    pumpAutoOff = true; // Always use auto-off when activated programmatically
+    pumpOnTime = millis();
+    pumpDurationMs = durationMs;
+    pumpSecondsCount = 0; // Reset debug counter
+    lastSecondPrint = millis();
+    pumpActivationCount++; // Increment global counter
+    Serial.print("[INFO] Contador de activaciones de bomba: "); Serial.println(pumpActivationCount);
+}
+
+// Función para desactivar la bomba
+void deactivatePump() {
+    if (!pumpActivated) {
+        // Serial.println("[INFO] La bomba ya está desactivada."); // Maybe too verbose
+        return;
+    }
+    Serial.println("[ACCION] Desactivando bomba.");
+    digitalWrite(BOMBA_PIN, LOW);
+    pumpActivated = false;
+    pumpAutoOff = false; // Reset auto-off flag
+    pumpDurationMs = 0;
+    pumpOnTime = 0;
+    pumpSecondsCount = 0;
+}
+
+// Carga el intervalo de medición desde el archivo
+void loadMeasurementInterval() {
+    File file = LittleFS.open("/interval.txt", "r");
+    if (!file) {
+        Serial.println("[INFO] No se encontró 'interval.txt', usando valor por defecto (3 horas).");
+        measurementInterval = 3;
+        saveMeasurementInterval(measurementInterval); // Save the default value
+        return;
+    }
+    String valStr = file.readStringUntil('\n');
+    file.close();
+    valStr.trim();
+    int val = valStr.toInt();
+    if (val > 0 && val < 168) { // Sanity check (e.g., 1 hour to 1 week)
+        measurementInterval = val;
+        Serial.print("[INFO] Intervalo de medición cargado: ");
+        Serial.print(measurementInterval); Serial.println(" horas.");
+    } else {
+        Serial.print("[WARN] Intervalo inválido en 'interval.txt' ('"); Serial.print(valStr);
+        Serial.println("'). Usando valor por defecto (3 horas).");
+        measurementInterval = 3;
+        saveMeasurementInterval(measurementInterval); // Save the default value
+    }
+}
+
+// Guarda el intervalo de medición en el archivo
+void saveMeasurementInterval(int interval) {
+    if (interval <= 0 || interval >= 168) {
+         Serial.print("[ERROR] Intento de guardar intervalo inválido: "); Serial.println(interval);
+         return;
+    }
+    File file = LittleFS.open("/interval.txt", "w");
+    if (!file) {
+        Serial.println("[ERROR] No se pudo abrir 'interval.txt' para escritura.");
+        return;
+    }
+    file.println(interval);
+    file.close();
+    measurementInterval = interval; // Update in-memory value
+    Serial.print("[INFO] Intervalo de medición guardado: ");
+    Serial.print(measurementInterval); Serial.println(" horas.");
+
+    // Recalcular la próxima hora de medición basada en la última medición o el inicio
+    unsigned long lastEventTime = (lastMeasurementTimestamp > startTime) ? lastMeasurementTimestamp : startTime;
+    nextMeasureTimestamp = lastEventTime + (measurementInterval * 3600000UL);
+     Serial.print("[INFO] Próxima medición recalculada para millis: "); Serial.println(nextMeasureTimestamp);
+}
+
+// Carga las credenciales WiFi desde el archivo
+void loadWifiCredentials() {
+    File file = LittleFS.open("/WifiConfig.txt", "r");
+    if (!file) {
+        Serial.println("[INFO] No se encontró 'WifiConfig.txt'. No se intentará autoconexión.");
+        return;
+    }
+    if (!file.available()) {
+         Serial.println("[INFO] 'WifiConfig.txt' está vacío.");
+         file.close();
+         return;
+    }
+
+    String ssid = file.readStringUntil('\n');
+    String password = file.readStringUntil('\n');
+    file.close();
+    ssid.trim();
+    password.trim();
+
+    if (ssid.length() == 0) {
+         Serial.println("[WARN] SSID vacío en 'WifiConfig.txt'.");
+         return;
+    }
+
+    Serial.print("[ACCION] Intentando conectar a WiFi guardada: '"); Serial.print(ssid); Serial.println("'...");
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), password.c_str());
+
+    // Intentar configuración estática (descomentar si se desea IP fija)
+    // WiFi.config(ip, gateway, subnet);
+    // Serial.println("[INFO] Intentando configuración IP estática.");
+
+
+    int attempts = 0;
+    const int maxAttempts = 20; // Wait up to 20 * 500ms = 10 seconds
+    while (WiFi.status() != WL_CONNECTED && attempts < maxAttempts) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\n[INFO] Conexión WiFi exitosa con credenciales guardadas.");
+        Serial.print("[INFO] IP Address: "); Serial.println(WiFi.localIP());
+        Serial.print("[INFO] Subnet Mask: "); Serial.println(WiFi.subnetMask());
+        Serial.print("[INFO] Gateway IP: "); Serial.println(WiFi.gatewayIP());
+        Serial.print("[INFO] DNS IP: "); Serial.println(WiFi.dnsIP());
+        Serial.print("[INFO] RSSI: "); Serial.print(WiFi.RSSI()); Serial.println(" dBm");
+    } else {
+        Serial.println("\n[ERROR] Falló la conexión WiFi con credenciales guardadas.");
+        WiFi.disconnect(); // Ensure disconnected state
+    }
+}
+
+// Carga la etapa manual desde el archivo al iniciar
+void loadManualStage() {
+    File file = LittleFS.open("/ManualStage.txt", "r");
+    if (!file) {
+        Serial.println("[INFO] No se encontró 'ManualStage.txt'. Control de etapa automático activado.");
+        manualStageControl = false;
+        manualStageIndex = 0; // Default to first stage if file doesn't exist
+        return;
+    }
+
+    if (!file.available()) {
+         Serial.println("[INFO] 'ManualStage.txt' está vacío. Control de etapa automático activado.");
+         file.close();
+         manualStageControl = false;
+         manualStageIndex = 0;
+         return;
+    }
+
+    String stageStr = file.readStringUntil('\n');
+    file.close();
+    stageStr.trim();
+    int stageIdx = stageStr.toInt();
+
+    // Validate the loaded index
+    if (stageIdx >= 0 && stageIdx < numStages) {
+        manualStageIndex = stageIdx;
+        manualStageControl = true;
+        Serial.print("[INFO] Control manual de etapa cargado desde archivo. Etapa: ");
+        Serial.println(stages[manualStageIndex].name);
+    } else {
+        Serial.print("[WARN] Índice de etapa manual inválido ('"); Serial.print(stageStr);
+        Serial.println("') en 'ManualStage.txt'. Usando control automático.");
+        manualStageControl = false;
+        manualStageIndex = 0; // Reset to default
+        // Optionally delete the invalid file
+        LittleFS.remove("/ManualStage.txt");
+    }
+}
+
+// Guarda la etapa manual seleccionada
+void saveManualStage(int index) {
+     if (index < 0 || index >= numStages) {
+         Serial.print("[ERROR] Intento de guardar índice de etapa manual inválido: "); Serial.println(index);
+         return;
+     }
+     File file = LittleFS.open("/ManualStage.txt", "w");
+     if (!file) {
+         Serial.println("[ERROR] No se pudo abrir 'ManualStage.txt' para escritura.");
+         return;
+     }
+     file.println(index);
+     file.close();
+     manualStageIndex = index; // Update in-memory value
+     manualStageControl = true; // Ensure manual control is active
+     Serial.print("[INFO] Etapa manual guardada: "); Serial.println(stages[manualStageIndex].name);
+}
+
 
 // Carga las mediciones previas desde el archivo
 String loadMeasurements() {
-    File configFile = LittleFS.open("/Measurements.txt", "r");
-    if (!configFile) {
-        Serial.println("[INFO] No se encontraron mediciones previas.");
+    File file = LittleFS.open("/Measurements.txt", "r");
+    if (!file) {
+        Serial.println("[INFO] No se encontró 'Measurements.txt'. No hay historial previo.");
         return "";
     }
-    String Measurements = configFile.readStringUntil('\n');
-    Serial.println("[INFO] Mediciones cargadas desde el archivo:");
-    Serial.println(Measurements);
-    configFile.close();
-    return Measurements;
+     if (!file.available()) {
+        Serial.println("[INFO] 'Measurements.txt' está vacío.");
+        file.close();
+        return "";
+     }
+    // Assuming measurements are stored one JSON object per line or comma-separated
+    // Let's assume comma-separated for parsing simplicity with parseData
+    String measurementsStr = file.readString();
+    file.close();
+    Serial.println("[INFO] Historial de mediciones cargado desde archivo.");
+    // Serial.println(measurementsStr); // Can be very long, comment out usually
+    return measurementsStr;
 }
 
-// Calcula el VPD (Déficit de Presión de Vapor)
-float calculateVPD(float temperature, float humidity) {
-    float svp = 0.6108 * exp((17.27 * temperature) / (temperature + 237.3));
-    float avp = (humidity / 100.0) * svp;
-    float vpd = svp - avp;
-    return vpd;
-}
-int loadHumidityThreshold() {
-    File configFile = LittleFS.open("/humidityThreshold.txt", "r");
-    if (!configFile) {
-        Serial.println("Error al abrir humidityThreshold.txt, usando 50 por defecto");
-        return 50;
+// Guarda TODAS las mediciones actuales en el archivo (sobrescribe)
+void saveMeasurementFile(const String& allMeasurementsString) {
+    File file = LittleFS.open("/Measurements.txt", "w");
+    if (!file) {
+        Serial.println("[ERROR] No se pudo abrir 'Measurements.txt' para escritura.");
+        return;
     }
-    String thresholdStr = configFile.readStringUntil('\n');
-    configFile.close();
-    return thresholdStr.toInt();
-}
-// Maneja la solicitud /data
-void handleData() {
-    Serial.println("[ACCION] Solicitud /data recibida, midiendo...");
-
-    float humidity = getHumidity();
-    float temperature = getTemperature();
-
-    unsigned long currentTime = millis();
-    unsigned long elapsedTime = (currentTime - startTime) / 1000;
-    unsigned long totalElapsedTimeHours = elapsedTime / 3600;
-    unsigned long totalElapsedTimeMinutes = (elapsedTime % 3600) / 60;
-    String elapsedTimeString = String(totalElapsedTimeHours) + "." + String(totalElapsedTimeMinutes);
-
-    float vpd = calculateVPD(temperature, humidity);
-
-    String response = "{\"humidity\":" + String(humidity) +
-                      ",\"temperature\":" + String(temperature) +
-                      ",\"vpd\":" + String(vpd) +
-                      ",\"pumpStatus\":" + String(pumpActivated) +
-                      ",\"elapsedTime\":" + String(elapsedTime) +
-                      ",\"humidityThreshold\":" + String(loadHumidityThreshold()) +
-                      ",\"pumpActivationCount\":" + String(pumpActivationCount) +
-                      ",\"totalElapsedTime\":\"" + elapsedTimeString + "\"" +
-                      ",\"startTime\":" + String(startTime) +
-                      "}";
-
-    Serial.println("[INFO] Datos enviados al cliente:");
-    Serial.println(response);
-
-    server.sendHeader("Access-Control-Allow-Origin", "*");
-    server.send(200, "application/json", response);
+    size_t bytesWritten = file.print(allMeasurementsString);
+    file.close();
+    if (bytesWritten == allMeasurementsString.length()) {
+         // Serial.println("[DEBUG] Historial de mediciones guardado en archivo."); // Verbose
+    } else {
+         Serial.println("[ERROR] Error al escribir historial completo en 'Measurements.txt'.");
+    }
 }
 
-// Realiza una medición manual
-void takeMeasurement() {
-    Serial.println("[ACCION] /takeMeasurement: Se realizará una medición manual ahora...");
-    handleData();
-}
-
-// Conecta a WiFi con credenciales proporcionadas
-void handleConnectWifi() {
-    server.on("/connectWifi", HTTP_POST, []() {
-        Serial.println("[ACCION] Intentando conectar a la WiFi con las credenciales proporcionadas...");
-        String ssid = server.arg("ssid");
-        String password = server.arg("password");
-        WiFi.begin(ssid.c_str(), password.c_str());
-        int attempts = 0;
-        while (WiFi.status() != WL_CONNECTED && attempts < 10) {
-            delay(1000);
-            attempts++;
-            Serial.print(".");
-        }
-        if (WiFi.status() == WL_CONNECTED) {
-            Serial.println("\n[INFO] Conexión WiFi exitosa.");
-            server.send(200, "text/plain", "Conexión exitosa. IP: " + WiFi.localIP().toString());
-        } else {
-            Serial.println("\n[ERROR] No se pudo conectar a la red WiFi.");
-            server.send(500, "text/plain", "Error al conectar a la red WiFi.");
-        }
-    });
-}
-
-// Guarda las credenciales WiFi y reinicia el sistema
-void handleSaveWifiCredentials() {
-    server.on("/saveWifiCredentials", HTTP_POST, []() {
-        Serial.println("[ACCION] Guardando credenciales WiFi y validando...");
-        String ssid = server.arg("ssid");
-        String password = server.arg("password");
-
-        WiFi.mode(WIFI_STA);
-        WiFi.begin(ssid.c_str(), password.c_str());
-        int attempts = 0;
-        while (WiFi.status() != WL_CONNECTED && attempts < 10) {
-            delay(1000);
-            attempts++;
-            Serial.print(".");
-        }
-
-        if (WiFi.status() == WL_CONNECTED) {
-            File configFile = LittleFS.open("/WifiConfig.txt", "w");
-            if (!configFile) {
-                Serial.println("\n[ERROR] No se pudo guardar WifiConfig.txt.");
-                server.send(500, "text/plain", "Error al guardar las credenciales WiFi.");
-                return;
-            }
-            configFile.println(ssid);
-            configFile.println(password);
-            configFile.close();
-            Serial.println("\n[INFO] Credenciales WiFi guardadas. Reiniciando...");
-            server.send(200, "text/plain", "Credenciales WiFi guardadas. Reiniciando...");
-            delay(2000);
-            ESP.restart();
-        } else {
-            Serial.println("\n[ERROR] No se pudo conectar con las credenciales proporcionadas.");
-            server.send(500, "text/plain", "No se pudo conectar a la red con las credenciales proporcionadas.");
-        }
-    });
-}
-
-// Analiza los datos JSON
+// Parsea la cadena de mediciones cargada del archivo en el array
+// Asume formato: {json1},{json2},...
 int parseData(String input, String output[]) {
     int count = 0;
     int startIndex = 0;
     int endIndex = 0;
-    while ((startIndex = input.indexOf('{', endIndex)) != -1) {
+    input.trim(); // Remove leading/trailing whitespace
+
+    while (startIndex < input.length() && count < MAX_JSON_OBJECTS) {
+        startIndex = input.indexOf('{', startIndex);
+        if (startIndex == -1) break; // No more opening braces
+
         endIndex = input.indexOf('}', startIndex);
-        if (endIndex == -1) {
-            break;
-        }
+        if (endIndex == -1) break; // No closing brace found (malformed)
+
+        // Extract the JSON object string
         String entry = input.substring(startIndex, endIndex + 1);
         output[count++] = entry;
+
+        // Move startIndex past the current object for the next search
+        startIndex = endIndex + 1;
+        // Skip potential comma separator
+        if (startIndex < input.length() && input.charAt(startIndex) == ',') {
+            startIndex++;
+        }
+         // Skip potential whitespace after comma
+         while(startIndex < input.length() && isspace(input.charAt(startIndex))) {
+             startIndex++;
+         }
     }
-    return count;
+    return count; // Return the number of measurements parsed
 }
 
-// Convierte el array de Strings a un solo String
+
+// Convierte el array de Strings de mediciones a un solo String para guardar
+// Formato: {json1},{json2},...
 String arrayToString(String array[], size_t arraySize) {
     String result = "";
     bool first = true;
     for (size_t i = 0; i < arraySize; i++) {
-        if (array[i].length() > 0) {
+        // Only add non-empty entries
+        if (array[i] != nullptr && array[i].length() > 2) { // Check basic validity { }
             if (!first) {
-                result += ", ";
+                result += ","; // Comma separator
             }
             result += array[i];
             first = false;
@@ -518,45 +681,44 @@ String arrayToString(String array[], size_t arraySize) {
     return result;
 }
 
-// Guarda las mediciones en un archivo
-void saveMeasurementFile(String Measurement) {
-    File configFile = LittleFS.open("/Measurements.txt", "w");
-    if (!configFile) {
-        Serial.println("[ERROR] No se pudo abrir Measurements.txt para escritura.");
-        return;
-    }
-    configFile.println(Measurement);
-    configFile.close();
-}
-
-// Guarda una medición individual
+// Guarda una nueva medición en el array y en el archivo
 void saveMeasurement(const String& jsonString) {
-    Serial.println("[ACCION] Guardando medición...");
+    Serial.println("[ACCION] Guardando nueva medición:");
     Serial.println(jsonString);
-    StaticJsonDocument<200> doc;
-    DeserializationError error = deserializeJson(doc, jsonString);
-    if (error) {
-        Serial.println("[ERROR] al deserializar JSON de la medición.");
+
+    // Basic validation: check if it looks like a JSON object
+    if (!jsonString.startsWith("{") || !jsonString.endsWith("}")) {
+        Serial.println("[ERROR] Intento de guardar medición inválida (no es JSON object).");
         return;
     }
-    String measurementString;
-    serializeJson(doc, measurementString);
+
     if (jsonIndex < MAX_JSON_OBJECTS) {
-        measurements[jsonIndex++] = measurementString;
-        saveMeasurementFile(arrayToString(measurements, MAX_JSON_OBJECTS));
+        // Add to the next available slot
+        measurements[jsonIndex++] = jsonString;
+        Serial.print("[INFO] Medición agregada al índice: "); Serial.println(jsonIndex - 1);
     } else {
-        Serial.println("[ERROR] Array de JSON lleno. No se pudo agregar la medición.");
+        // Array is full, implement a sliding window: shift old ones, add new one at the end
+        Serial.println("[WARN] Array de mediciones lleno. Desplazando historial...");
+        for (int i = 0; i < MAX_JSON_OBJECTS - 1; i++) {
+            measurements[i] = measurements[i + 1];
+        }
+        measurements[MAX_JSON_OBJECTS - 1] = jsonString;
+        // jsonIndex remains MAX_JSON_OBJECTS
+         Serial.print("[INFO] Medición agregada al final (índice "); Serial.print(MAX_JSON_OBJECTS - 1); Serial.println("), la más antigua eliminada.");
     }
+    // Save the entire updated history back to the file
+    saveMeasurementFile(arrayToString(measurements, jsonIndex)); // Use jsonIndex as size
 }
 
-// Formatea las mediciones para enviarlas como un array JSON
+// Formatea las mediciones para enviarlas como un array JSON [{},{}]
 void formatMeasurementsToString(String& formattedString) {
     formattedString = "[";
     bool first = true;
-    for (int i = 0; i < MAX_JSON_OBJECTS; i++) {
-        if (measurements[i] != "") {
+    // Iterate only up to jsonIndex, which holds the count of valid entries
+    for (int i = 0; i < jsonIndex; i++) {
+        if (measurements[i] != nullptr && measurements[i].length() > 2) {
             if (!first) {
-                formattedString += ", ";
+                formattedString += ",";
             }
             formattedString += measurements[i];
             first = false;
@@ -565,484 +727,755 @@ void formatMeasurementsToString(String& formattedString) {
     formattedString += "]";
 }
 
-// Endpoint para guardar una medición
-void handleSaveMeasurement() {
-    server.on("/saveMeasurement", HTTP_POST, []() {
-        String jsonString = server.arg("plain");
-        saveMeasurement(jsonString);
-        server.send(200, "text/plain", "Medición guardada correctamente");
-    });
-}
+// Función principal de control automático basada en etapas y tiempo
+void controlIndependiente() {
+    unsigned long now = millis();
+    unsigned long elapsedMillis = now - startTime;
+    unsigned long elapsedSeconds = elapsedMillis / 1000;
+    unsigned long elapsedHours = elapsedSeconds / 3600;
+    unsigned long elapsedDays = elapsedSeconds / 86400;
 
-// Endpoint para cargar las mediciones
-void handleLoadMeasurement() {
-    server.on("/loadMeasurement", HTTP_GET, []() {
-        String jsonString = arrayToString(measurements, MAX_JSON_OBJECTS);
-        formatMeasurementsToString(jsonString);
-        Serial.println("[ACCION] Cargando mediciones para enviar al cliente:");
-        Serial.println(jsonString);
-        server.send(200, "application/json", jsonString);
-    });
-}
+    Serial.println("\n[CONTROL] Iniciando ciclo de control independiente...");
+    Serial.print("[INFO] Tiempo transcurrido: "); Serial.print(elapsedDays); Serial.print("d ");
+    Serial.print(elapsedHours % 24); Serial.print("h ");
+    Serial.print((elapsedSeconds % 3600) / 60); Serial.println("m");
 
-// Endpoint para establecer el umbral global (aunque se usa por etapa)
-void handleThresholdRequest() {
-    server.on("/threshold", HTTP_POST, [](){
-      if (!server.hasArg("plain")) {
-        server.send(400, "text/plain", "Invalid request");
-        return;
-      }
 
-      String jsonString = server.arg("plain");
-      StaticJsonDocument<200> doc;
-      DeserializationError error = deserializeJson(doc, jsonString);
+    // 1. Tomar Medición Actual
+    Serial.println("[CONTROL] Tomando lecturas de sensores...");
+    float humidity = getHumidity();
+    float temperature = getTemperature();
+    lastMeasurementTimestamp = now; // Update last measurement time
 
-      if (error) {
-        server.send(400, "text/plain", "Invalid JSON");
-        return;
-      }
 
-      int newThreshold = doc["umbral"];
-      File configFile = LittleFS.open("/humidityThreshold.txt", "w");
-      if (!configFile) {
-          Serial.println("[ERROR] al abrir humidityThreshold.txt");
-          server.send(500, "text/plain", "Error interno");
-          return;
-      }
-      configFile.println(newThreshold);
-      configFile.close();
-
-      Serial.print("[INFO] Nuevo umbral global guardado: ");
-      Serial.println(newThreshold);
-
-      server.send(200, "application/json", "{\"status\":\"success\"}");
-    });
-}
-
-// Carga las credenciales WiFi desde el archivo
-void loadWifiCredentials() {
-    File configFile = LittleFS.open("/WifiConfig.txt", "r");
-    if (!configFile) {
-        Serial.println("[INFO] No hay credenciales WiFi guardadas.");
-        return;
+    // Check sensor read validity
+    if (humidity < 0.0 || temperature <= -90.0) {
+         Serial.println("[ERROR] Lecturas de sensor inválidas. Abortando ciclo de control.");
+         // Don't save measurement or attempt watering
+         return;
     }
-    delay(500);
-    if (configFile.available()) {
-        String ssidc = configFile.readStringUntil('\n');
-        String passwordc = configFile.readStringUntil('\n');
-        configFile.close();
-        ssidc.trim();
-        passwordc.trim();
-        Serial.println("[ACCION] Intentando conectar con las credenciales guardadas...");
-        WiFi.mode(WIFI_STA);
-        WiFi.begin(ssidc.c_str(), passwordc.c_str());
-        WiFi.config(ip, gateway, subnet);
-        int attempts = 0;
-        while (WiFi.status() != WL_CONNECTED && attempts < 10) {
-            delay(1000);
-            attempts++;
-            Serial.print(".");
-        }
-        if (WiFi.status() == WL_CONNECTED) {
-            Serial.println("\n[INFO] Conectado a WiFi con credenciales guardadas.");
-            Serial.print("Dirección IP: ");
-            Serial.println(WiFi.localIP());
+
+    // 2. Determinar Etapa y Parámetros Actuales
+    int stageIndex = getCurrentStageIndex(elapsedDays);
+    const Stage& currentStage = stages[stageIndex];
+    int currentThreshold = currentStage.humidityThreshold;
+    int wateringTimeSec = currentStage.wateringTimeSec;
+    unsigned long wateringTimeMs = wateringTimeSec * 1000UL;
+
+    Serial.println("[INFO] Parámetros para la etapa actual:");
+    Serial.print("  Etapa: "); Serial.println(currentStage.name);
+    Serial.print("  Umbral Humedad Mín (%): "); Serial.println(currentThreshold);
+    Serial.print("  Tiempo Riego (s): "); Serial.println(wateringTimeSec);
+
+    // 3. Decidir si Regar (Solo si la bomba no está ya en ciclo Auto-Off)
+    bool needsWatering = false;
+    if (!pumpAutoOff) { // Only evaluate watering if pump isn't already running on timer
+        if (humidity < currentThreshold) {
+            Serial.print("[DECISION] Humedad ("); Serial.print(humidity, 1);
+            Serial.print("%) por debajo del umbral ("); Serial.print(currentThreshold);
+            Serial.println("%). Se necesita riego.");
+            needsWatering = true;
         } else {
-            Serial.println("\n[ERROR] No se pudo conectar con credenciales guardadas.");
+             Serial.print("[DECISION] Humedad ("); Serial.print(humidity, 1);
+             Serial.print("%) está por encima o igual al umbral ("); Serial.print(currentThreshold);
+             Serial.println("%). No se necesita riego por umbral.");
+            // Aquí podríamos añadir la lógica de riego forzado cada X horas si se desea,
+            // pero la mantenemos simple por ahora: regar solo si baja del umbral.
+             // Ejemplo Lógica 24h:
+             // static unsigned long lastWateringTime = 0;
+             // if (now - lastWateringTime > 86400000UL) { // Mas de 24h sin regar
+             //    Serial.println("[DECISION] Han pasado >24h sin riego. Forzando riego.");
+             //    needsWatering = true;
+             // }
         }
+
+        if (needsWatering) {
+            activatePump(wateringTimeMs);
+            // if (now - lastWateringTime > 86400000UL) lastWateringTime = now; // Update last watering time if forced
+        } else {
+             // Asegurarse que la bomba esté apagada si no se necesita riego
+             // y no está en ciclo auto-off (aunque la condición externa ya lo cubre)
+             deactivatePump();
+        }
+
     } else {
-        Serial.println("[INFO] WifiConfig.txt vacío o ilegible.");
-        configFile.close();
+        Serial.println("[INFO] Ciclo de control omitido (bomba en modo Auto-Off).");
+        // needsWatering remains false as we didn't activate it now
+    }
+
+    // 4. Guardar la Medición
+    // Crear JSON string para la medición
+    // Usar StaticJsonDocument para asegurar formato correcto y evitar errores de string manual
+    StaticJsonDocument<256> doc; // Increased size for more fields
+    doc["humidity"] = serialized(String(humidity, 1)); // Format to 1 decimal place
+    doc["temperature"] = serialized(String(temperature, 1));
+    doc["timestamp"] = String(elapsedHours) + "h" + String((elapsedSeconds % 3600) / 60) + "m"; // e.g., "12h30m"
+    doc["pumpActivated"] = needsWatering; // Record if watering was TRIGGERED in THIS cycle
+    doc["stage"] = currentStage.name;
+    doc["epoch_ms"] = now; // Add epoch timestamp
+
+    String measurementString;
+    serializeJson(doc, measurementString);
+
+    saveMeasurement(measurementString);
+
+    Serial.println("[CONTROL] Ciclo de control independiente finalizado.");
+}
+
+// --- Handlers para Endpoints HTTP ---
+
+// Handler para la página principal o config
+void handleRoot() {
+     String path = "/";
+     String contentType = "text/html";
+     bool isIndex = true;
+
+     if (WiFi.status() != WL_CONNECTED) {
+          path = "/config.html";
+          Serial.println("[HTTP] Sirviendo página de configuración WiFi (config.html)");
+     } else {
+          path = "/index.html";
+          Serial.println("[HTTP] Sirviendo página principal (index.html)");
+     }
+
+    if (!LittleFS.exists(path)) {
+        Serial.print("[ERROR] No se encontró el archivo: "); Serial.println(path);
+        server.send(404, "text/plain", "Error 404: Archivo no encontrado (" + path + ")");
+        return;
+    }
+
+    File file = LittleFS.open(path, "r");
+    if (!file) {
+         Serial.print("[ERROR] No se pudo abrir el archivo: "); Serial.println(path);
+         server.send(500, "text/plain", "Error interno del servidor: No se pudo abrir el archivo.");
+         return;
+    }
+
+    // Usar streamFile para eficiencia con archivos grandes
+    server.streamFile(file, contentType);
+    file.close();
+}
+
+
+// Handler para /data
+void handleData() {
+    Serial.println("[HTTP] Solicitud /data recibida.");
+
+    // Obtener lecturas actuales
+    float humidity = getHumidity();
+    float temperature = getTemperature();
+    float vpd = calculateVPD(temperature, humidity);
+
+    // Tiempo transcurrido
+    unsigned long now = millis();
+    unsigned long elapsedSeconds = (now - startTime) / 1000;
+
+    // Determinar estado actual (basado en tiempo o manual)
+    unsigned long elapsedDays = elapsedSeconds / 86400;
+    int stageIndex = getCurrentStageIndex(elapsedDays);
+    const Stage& currentStage = stages[stageIndex];
+
+
+    // Crear respuesta JSON
+    StaticJsonDocument<512> doc; // Sufficient size for data payload
+    doc["temperature"] = serialized(String(temperature, 1));
+    doc["humidity"] = serialized(String(humidity, 1));
+    doc["vpd"] = serialized(String(vpd, 2)); // VPD usually shown with 2 decimals
+    doc["pumpStatus"] = pumpActivated;
+    doc["pumpActivationCount"] = pumpActivationCount;
+    doc["elapsedTime"] = elapsedSeconds; // Total seconds elapsed
+    doc["startTime"] = startTime; // System start time in ms
+    doc["lastMeasurementTimestamp"] = lastMeasurementTimestamp; // Last measurement time in ms
+    // Current stage info
+    doc["currentStageName"] = currentStage.name;
+    doc["currentStageIndex"] = stageIndex;
+    doc["currentStageThreshold"] = currentStage.humidityThreshold; // Threshold for the CURRENT stage
+    doc["currentStageWateringSec"] = currentStage.wateringTimeSec; // Watering time for the CURRENT stage
+    doc["manualStageControl"] = manualStageControl;
+    // Network Info (if connected)
+    if (WiFi.status() == WL_CONNECTED) {
+       doc["deviceIP"] = WiFi.localIP().toString();
+       doc["wifiRSSI"] = WiFi.RSSI();
+    } else {
+        doc["deviceIP"] = (WiFi.getMode() == WIFI_AP) ? WiFi.softAPIP().toString() : "N/A";
+        doc["wifiRSSI"] = 0;
+    }
+
+
+    String response;
+    serializeJson(doc, response);
+
+    server.sendHeader("Access-Control-Allow-Origin", "*"); // Allow CORS for development
+    server.send(200, "application/json", response);
+    // Serial.println("[HTTP] Respuesta /data enviada:"); // Verbose
+    // Serial.println(response); // Verbose
+}
+
+// Handler para listar redes WiFi disponibles
+void handleWifiListRequest() {
+    Serial.println("[HTTP] Solicitud /wifiList recibida. Escaneando redes...");
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    int numNetworks = WiFi.scanNetworks();
+    Serial.print("[INFO] Escaneo completado. Redes encontradas: "); Serial.println(numNetworks);
+
+    if (numNetworks == -1) {
+         Serial.println("[ERROR] Escaneo WiFi falló.");
+         server.send(500, "application/json", "{\"error\":\"Scan failed\"}");
+         return;
+    }
+    if (numNetworks == 0) {
+         Serial.println("[INFO] No se encontraron redes WiFi.");
+         server.send(200, "application/json", "[]"); // Send empty array
+         return;
+    }
+
+    // Estimate JSON size needed: ~70 bytes per network + array overhead
+    DynamicJsonDocument wifiJson(numNetworks * 70 + 50);
+    JsonArray networks = wifiJson.to<JsonArray>();
+
+    // Limit number of networks reported if too many?
+    int maxNetworksToSend = (numNetworks > 20) ? 20 : numNetworks; // Limit to e.g., 20
+
+    for (int i = 0; i < maxNetworksToSend; ++i) {
+        JsonObject network = networks.createNestedObject();
+        network["ssid"] = WiFi.SSID(i);
+        network["rssi"] = WiFi.RSSI(i);
+        // network["encryption"] = WiFi.encryptionType(i); // Could add encryption type
+    }
+
+    String response;
+    serializeJson(wifiJson, response);
+    server.send(200, "application/json", response);
+}
+
+// Handler para conectar a WiFi (intento manual desde UI, no guarda)
+void handleConnectWifi() {
+    Serial.println("[HTTP] Solicitud /connectWifi (POST) recibida.");
+    if (!server.hasArg("plain")) {
+        server.send(400, "text/plain", "Bad Request: Missing POST body");
+        return;
+    }
+
+    String body = server.arg("plain");
+    StaticJsonDocument<200> doc;
+    DeserializationError error = deserializeJson(doc, body);
+
+    if (error) {
+        server.send(400, "text/plain", "Bad Request: Invalid JSON");
+        return;
+    }
+
+    const char* ssid_c = doc["ssid"];
+    const char* password_c = doc["password"];
+
+    if (!ssid_c || strlen(ssid_c) == 0) {
+        server.send(400, "text/plain", "Bad Request: Missing SSID");
+        return;
+    }
+     // Password can be empty for open networks
+
+    String ssid = String(ssid_c);
+    String password = String(password_c ? password_c : ""); // Handle null password
+
+
+    Serial.print("[ACCION] Intentando conectar a WiFi (manual): '"); Serial.print(ssid); Serial.println("'...");
+
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), password.c_str());
+
+    int attempts = 0;
+    const int maxAttempts = 20; // 10 seconds
+    while (WiFi.status() != WL_CONNECTED && attempts < maxAttempts) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\n[INFO] Conexión WiFi manual exitosa.");
+        dnsServer.stop(); // Stop DNS if we connected
+        String successMsg = "{\"status\":\"success\", \"ip\":\"" + WiFi.localIP().toString() + "\"}";
+        server.send(200, "application/json", successMsg);
+    } else {
+        Serial.println("\n[ERROR] Conexión WiFi manual falló.");
+        WiFi.disconnect(false); // Don't erase config on manual fail
+        // Go back to AP mode? Or stay STA trying? Let's revert to AP if saved creds failed too
+        if (!LittleFS.exists("/WifiConfig.txt")) { // If no saved creds exist, go back to AP
+             startAPMode();
+        }
+        server.send(401, "application/json", "{\"status\":\"failed\", \"message\":\"Connection failed\"}");
     }
 }
 
-// Endpoint para limpiar el historial de mediciones
+
+// Handler para guardar credenciales WiFi y reiniciar
+void handleSaveWifiCredentials() {
+     Serial.println("[HTTP] Solicitud /saveWifiCredentials (POST) recibida.");
+     if (!server.hasArg("plain")) {
+         server.send(400, "text/plain", "Bad Request: Missing POST body");
+         return;
+     }
+
+     String body = server.arg("plain");
+     StaticJsonDocument<200> doc;
+     DeserializationError error = deserializeJson(doc, body);
+
+     if (error) {
+         server.send(400, "text/plain", "Bad Request: Invalid JSON");
+         return;
+     }
+
+    const char* ssid_c = doc["ssid"];
+    const char* password_c = doc["password"];
+
+    if (!ssid_c || strlen(ssid_c) == 0) {
+        server.send(400, "text/plain", "Bad Request: Missing SSID");
+        return;
+    }
+     // Password can be empty
+
+    String ssid = String(ssid_c);
+    String password = String(password_c ? password_c : "");
+
+
+     Serial.print("[ACCION] Validando y guardando credenciales WiFi para: '"); Serial.print(ssid); Serial.println("'...");
+
+     // 1. Try connecting with the new credentials FIRST
+     WiFi.mode(WIFI_STA);
+     WiFi.begin(ssid.c_str(), password.c_str());
+
+     int attempts = 0;
+     const int maxAttempts = 20; // 10 seconds
+     while (WiFi.status() != WL_CONNECTED && attempts < maxAttempts) {
+         delay(500);
+         Serial.print(".");
+         attempts++;
+     }
+
+     // 2. If connection successful, save them
+     if (WiFi.status() == WL_CONNECTED) {
+         Serial.println("\n[INFO] Conexión exitosa con nuevas credenciales. Guardando...");
+         File file = LittleFS.open("/WifiConfig.txt", "w");
+         if (!file) {
+             Serial.println("[ERROR] No se pudo abrir 'WifiConfig.txt' para escritura.");
+             server.send(500, "application/json", "{\"status\":\"error\", \"message\":\"Internal Server Error: Cannot save config\"}");
+             return;
+         }
+         file.println(ssid);
+         file.println(password);
+         file.close();
+         Serial.println("[INFO] Credenciales guardadas. Reiniciando el sistema...");
+         server.send(200, "application/json", "{\"status\":\"success\", \"message\":\"Credentials saved. Restarting system...\"}");
+         delay(1000); // Allow time for response to send
+         ESP.restart();
+     } else {
+         // 3. If connection failed, report error and DO NOT save
+         Serial.println("\n[ERROR] Falló la conexión con las credenciales proporcionadas. No se guardarán.");
+         WiFi.disconnect(false); // Don't erase existing config if any
+         // Revert to AP mode?
+         startAPMode();
+         server.send(401, "application/json", "{\"status\":\"failed\", \"message\":\"Connection failed with provided credentials. Not saved.\"}");
+     }
+}
+
+
+// Handler para guardar una medición (obsoleto? Measurements are saved internally now)
+/*
+void handleSaveMeasurement() {
+    Serial.println("[HTTP] Solicitud /saveMeasurement (POST) recibida.");
+     String jsonString = server.arg("plain");
+     if (jsonString.length() > 2) {
+         saveMeasurement(jsonString); // Use the internal save function
+         server.send(200, "application/json", "{\"status\":\"success\"}");
+     } else {
+         server.send(400, "text/plain", "Bad Request: Invalid measurement data");
+     }
+}*/
+
+// Handler para cargar las mediciones
+void handleLoadMeasurement() {
+    Serial.println("[HTTP] Solicitud /loadMeasurement (GET) recibida.");
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    String formattedJsonArray;
+    formatMeasurementsToString(formattedJsonArray); // Format the in-memory array
+    // Serial.println("[HTTP] Enviando historial de mediciones:"); // Verbose
+    // Serial.println(formattedJsonArray); // Verbose
+    server.send(200, "application/json", formattedJsonArray);
+}
+
+// Handler para limpiar el historial de mediciones
 void handleClearMeasurementHistory() {
-    server.on("/clearHistory", HTTP_POST, [](){
-        Serial.println("[ACCION] Borrando historial de mediciones...");
-        for (int i = 0; i < MAX_JSON_OBJECTS; i++) {
-            measurements[i] = "";
+     Serial.println("[HTTP] Solicitud /clearHistory (POST) recibida.");
+     server.sendHeader("Access-Control-Allow-Origin", "*");
+     Serial.println("[ACCION] Borrando historial de mediciones...");
+
+     // Clear the in-memory array
+     for (int i = 0; i < MAX_JSON_OBJECTS; i++) {
+         measurements[i] = ""; // Or assign nullptr if using String pointers
+     }
+     jsonIndex = 0; // Reset index
+
+     // Clear the file
+     if (LittleFS.exists("/Measurements.txt")) {
+        if (!LittleFS.remove("/Measurements.txt")) {
+             Serial.println("[ERROR] No se pudo borrar 'Measurements.txt'.");
+             // Send error but proceed with clearing memory
+             server.send(500, "application/json", "{\"status\":\"error\", \"message\":\"Could not delete history file\"}");
+             return; // Maybe don't return, just warn?
         }
-        jsonIndex = 0;
-        saveMeasurementFile("");
-        server.send(200, "application/json", "{\"status\":\"success\"}");
-    });
+     }
+      // Optionally recreate an empty file? saveMeasurementFile("");
+
+     Serial.println("[INFO] Historial de mediciones borrado.");
+     server.send(200, "application/json", "{\"status\":\"success\"}");
 }
 
-// Endpoint para establecer y obtener el intervalo de medición
+// Handler para establecer y obtener el intervalo de medición
 void handleMeasurementInterval() {
-    // Establecer el intervalo
-    server.on("/setMeasurementInterval", HTTP_POST, [](){
-       if (!server.hasArg("plain")) {
-           server.send(400, "text/plain", "Missing JSON");
-           return;
-       }
-       String body = server.arg("plain");
-       StaticJsonDocument<200> doc;
-       DeserializationError error = deserializeJson(doc, body);
-       if (error) {
-           server.send(400, "text/plain", "Invalid JSON");
-           return;
-       }
-       int newInterval = doc["interval"] | -1;
-       if (newInterval <= 0) {
-           server.send(400, "text/plain", "Interval must be > 0");
-           return;
-       }
-       Serial.print("[ACCION] Ajustando el intervalo de medición a: ");
-       Serial.print(newInterval);
-       Serial.println(" horas");
-       saveMeasurementInterval(newInterval);
-       server.send(200, "application/json", "{\"status\":\"success\"}");
-    });
-
-    // Obtener el intervalo
-    server.on("/getMeasurementInterval", HTTP_GET, [](){
-       DynamicJsonDocument doc(200);
-       doc["interval"] = measurementInterval;
-       String response;
-       serializeJson(doc, response);
-       Serial.print("[INFO] Devolviendo intervalo de medición actual: ");
-       Serial.println(response);
-       server.send(200, "application/json", response);
-    });
-}
-
-// Endpoint para controlar la bomba manualmente
-void handlePumpControl() {
-    server.on("/controlPump", HTTP_POST, [](){
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    if (server.method() == HTTP_POST) {
+        Serial.println("[HTTP] Solicitud /setMeasurementInterval (POST) recibida.");
         if (!server.hasArg("plain")) {
-            server.send(400, "text/plain", "Missing JSON");
+            server.send(400, "text/plain", "Bad Request: Missing JSON body");
             return;
         }
         String body = server.arg("plain");
-        StaticJsonDocument<200> doc;
+        StaticJsonDocument<100> doc;
         DeserializationError error = deserializeJson(doc, body);
         if (error) {
-            server.send(400, "text/plain", "Invalid JSON");
+            server.send(400, "text/plain", "Bad Request: Invalid JSON");
             return;
-        }   
-        String action = doc["action"] | "";
-        if (action == "on") {
-            int duration = doc["duration"] | 30;
-            Serial.print("[ACCION] Encendiendo la bomba manualmente por ");
-            Serial.print(duration);
-            Serial.println(" segundos (autoOff).");
-            activatePump(duration * 1000UL);
-            server.send(200, "application/json", "{\"status\":\"pump_on\"}");
-        } else if (action == "off") {
-            Serial.println("[ACCION] Apagando la bomba manualmente.");
-            deactivatePump();
-            server.send(200, "application/json", "{\"status\":\"pump_off\"}");
-        } else {
-            Serial.println("[ERROR] Acción de bomba inválida recibida.");
-            server.send(400, "application/json", "{\"status\":\"invalid_action\"}");
         }
-    });
+        if (!doc.containsKey("interval")) {
+             server.send(400, "text/plain", "Bad Request: Missing 'interval' key");
+             return;
+        }
+        int newInterval = doc["interval"];
+        if (newInterval > 0 && newInterval < 168) { // Basic validation (1h to 1 week)
+            Serial.print("[ACCION] Ajustando intervalo de medición a: "); Serial.print(newInterval); Serial.println(" horas");
+            saveMeasurementInterval(newInterval); // Save and update internal value
+            server.send(200, "application/json", "{\"status\":\"success\"}");
+        } else {
+            server.send(400, "text/plain", "Bad Request: Interval must be between 1 and 167 hours");
+        }
+    } else if (server.method() == HTTP_GET) {
+         Serial.println("[HTTP] Solicitud /getMeasurementInterval (GET) recibida.");
+         StaticJsonDocument<50> doc;
+         doc["interval"] = measurementInterval;
+         String response;
+         serializeJson(doc, response);
+         server.send(200, "application/json", response);
+    } else {
+         server.send(405, "text/plain", "Method Not Allowed");
+    }
+}
+
+// Handler para controlar la bomba manualmente
+void handlePumpControl() {
+    Serial.println("[HTTP] Solicitud /controlPump (POST) recibida.");
+     server.sendHeader("Access-Control-Allow-Origin", "*");
+     if (!server.hasArg("plain")) {
+         server.send(400, "text/plain", "Bad Request: Missing JSON body");
+         return;
+     }
+     String body = server.arg("plain");
+     StaticJsonDocument<128> doc; // Increased size for duration
+     DeserializationError error = deserializeJson(doc, body);
+     if (error) {
+         server.send(400, "text/plain", "Bad Request: Invalid JSON");
+         return;
+     }
+
+     if (!doc.containsKey("action")) {
+         server.send(400, "text/plain", "Bad Request: Missing 'action' key");
+         return;
+     }
+     String action = doc["action"].as<String>();
+
+     if (action.equalsIgnoreCase("on")) {
+         // Duration is optional, use a default from a stage if not provided? Or a fixed default.
+         // Let's use a fixed default of 30s if not provided.
+         int durationSec = doc["duration"] | 30; // Default to 30 seconds if "duration" is missing or null
+         if (durationSec <= 0) {
+             server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid duration\"}");
+             return;
+         }
+         unsigned long durationMs = durationSec * 1000UL;
+         Serial.print("[ACCION] Encendiendo bomba manualmente por "); Serial.print(durationSec); Serial.println(" segundos.");
+         activatePump(durationMs);
+         server.send(200, "application/json", "{\"status\":\"pump_on\"}");
+
+     } else if (action.equalsIgnoreCase("off")) {
+         Serial.println("[ACCION] Apagando bomba manualmente.");
+         deactivatePump();
+         server.send(200, "application/json", "{\"status\":\"pump_off\"}");
+     } else {
+         Serial.print("[ERROR] Acción de bomba inválida recibida: "); Serial.println(action);
+         server.send(400, "application/json", "{\"status\":\"invalid_action\"}");
+     }
+}
+
+// Handler para establecer etapa manual
+void handleSetManualStage() {
+    Serial.println("[HTTP] Solicitud /setManualStage (POST) recibida.");
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+     if (!server.hasArg("plain")) {
+         server.send(400, "text/plain", "Bad Request: Missing JSON body");
+         return;
+     }
+     String body = server.arg("plain");
+     StaticJsonDocument<100> doc;
+     DeserializationError error = deserializeJson(doc, body);
+     if (error) {
+         server.send(400, "text/plain", "Bad Request: Invalid JSON");
+         return;
+     }
+     if (!doc.containsKey("stage")) {
+         server.send(400, "text/plain", "Bad Request: Missing 'stage' key (index)");
+         return;
+     }
+     int stageIndex = doc["stage"];
+
+     if (stageIndex >= 0 && stageIndex < numStages) {
+         saveManualStage(stageIndex); // Save and update state
+         server.send(200, "application/json", "{\"status\":\"success\", \"message\":\"Manual stage set\"}");
+     } else {
+         server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid stage index\"}");
+     }
+}
+
+// Handler para obtener la etapa actual (manual o automática)
+void handleGetCurrentStage() {
+     Serial.println("[HTTP] Solicitud /getCurrentStage (GET) recibida.");
+     server.sendHeader("Access-Control-Allow-Origin", "*");
+
+     unsigned long elapsedSeconds = (millis() - startTime) / 1000;
+     unsigned long elapsedDays = elapsedSeconds / 86400;
+     int stageIndex = getCurrentStageIndex(elapsedDays); // Gets manual or auto index
+     const Stage& currentStage = stages[stageIndex];
+
+     StaticJsonDocument<256> doc;
+     doc["currentStage"] = currentStage.name;
+     doc["stageIndex"] = stageIndex;
+     doc["manualControl"] = manualStageControl;
+     // Add parameters for the current stage
+     JsonObject params = doc.createNestedObject("params");
+     params["threshold"] = currentStage.humidityThreshold;
+     params["watering"] = currentStage.wateringTimeSec;
+     params["duration_days"] = currentStage.duration_days; // Add duration too
+
+
+     String response;
+     serializeJson(doc, response);
+     server.send(200, "application/json", response);
+}
+
+// Handler para resetear el control manual de etapas
+void handleResetManualStage() {
+     Serial.println("[HTTP] Solicitud /resetManualStage (POST) recibida.");
+     server.sendHeader("Access-Control-Allow-Origin", "*");
+     manualStageControl = false;
+     // Delete the config file to make it permanent
+     if (LittleFS.exists("/ManualStage.txt")) {
+         if (!LittleFS.remove("/ManualStage.txt")) {
+             Serial.println("[ERROR] No se pudo borrar 'ManualStage.txt'.");
+             // Report error but continue logic
+         }
+     }
+     Serial.println("[INFO] Control manual de etapa desactivado (automático activado).");
+     server.send(200, "application/json", "{\"status\":\"success\", \"message\":\"Manual stage reset to automatic\"}");
+}
+
+// Handler para listar todas las etapas definidas
+void handleListStages() {
+    Serial.println("[HTTP] Solicitud /listStages (GET) recibida.");
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+
+    // Calculate JSON size: base array + object per stage (~100 bytes each?)
+    DynamicJsonDocument doc(JSON_ARRAY_SIZE(numStages) + numStages * JSON_OBJECT_SIZE(5) + 100); // Estimate size
+    JsonArray stagesArray = doc.to<JsonArray>();
+
+    for (int i = 0; i < numStages; i++) {
+        JsonObject stageObj = stagesArray.createNestedObject();
+        stageObj["index"] = i;
+        stageObj["name"] = stages[i].name;
+        stageObj["duration_days"] = stages[i].duration_days;
+        stageObj["humidityThreshold"] = stages[i].humidityThreshold;
+        stageObj["wateringTimeSec"] = stages[i].wateringTimeSec;
+    }
+
+    String response;
+    serializeJson(doc, response);
+    server.send(200, "application/json", response);
+}
+
+
+// Inicia el modo AP para configuración
+void startAPMode() {
+    const char* ap_ssid = "GreenNanny-Setup";
+    const char* ap_password = "password123"; // Use a simple password for setup AP
+
+    Serial.print("[ACCION] Iniciando Modo Access Point (AP): SSID '");
+    Serial.print(ap_ssid); Serial.println("'...");
+
+    WiFi.mode(WIFI_AP);
+    bool result = WiFi.softAP(ap_ssid, ap_password);
+
+    if(result) {
+        Serial.println("[INFO] Punto de acceso WiFi iniciado correctamente.");
+        IPAddress apIP = WiFi.softAPIP();
+        Serial.print("[INFO] IP del AP (conectar a esta IP): "); Serial.println(apIP);
+
+        // Iniciar servidor DNS para Captive Portal
+        // Respond to all DNS requests with the AP IP address
+        dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+        dnsServer.start(DNS_PORT, "*", apIP);
+        Serial.println("[INFO] Servidor DNS para portal cautivo iniciado.");
+    } else {
+        Serial.println("[ERROR] Falló al iniciar el punto de acceso WiFi!");
+        // Maybe try restarting?
+    }
 }
 
 // Configura el servidor web y los endpoints
 void setupServer() {
-    // Página principal
-    server.on("/", HTTP_GET, []() {
-        if (WiFi.status() != WL_CONNECTED) {
-            Serial.println("[INFO] No conectado a WiFi, mostrando página de configuración.");
-            File file = LittleFS.open("/config.html", "r");
-            if (!file) {
-                server.send(500, "text/plain", "No se encontró config.html");
-                return;
-            }
-            server.streamFile(file, "text/html");
-            file.close();
-        } else {
-            Serial.println("[INFO] Conectado a WiFi, mostrando página principal.");
-            File file = LittleFS.open("/index.html", "r");
-            if (!file) {
-                server.send(500, "text/plain", "No se encontró index.html");
-                return;
-            }
-            server.streamFile(file, "text/html");
-            file.close();
-        }
-    });
+    Serial.println("[SETUP] Configurando servidor web y endpoints...");
 
-    // Página de configuración
-    server.on("/config.html", HTTP_GET, []() {
-        Serial.println("[ACCION] Mostrando página de configuración WiFi.");
-        File file = LittleFS.open("/config.html", "r");
-        if (!file) {
-            server.send(500, "text/plain", "No se encontró config.html");
-            return;
-        }
-        server.streamFile(file, "text/html");
-        file.close();
-    });
+    // --- Páginas Principales ---
+    server.on("/", HTTP_GET, handleRoot); // Sirve index.html o config.html
+    server.on("/index.html", HTTP_GET, handleRoot);
+    server.on("/config.html", HTTP_GET, handleRoot);
 
-    // Endpoints existentes
-    server.on("/data", HTTP_GET, handleData);
-    server.on("/takeMeasurement", HTTP_POST, takeMeasurement);
-    server.on("/restartSystem", HTTP_POST, []() {
+    // --- Endpoints API ---
+    server.on("/data", HTTP_GET, handleData); // Datos principales sensores y estado
+    server.on("/loadMeasurement", HTTP_GET, handleLoadMeasurement); // Historial de mediciones
+    server.on("/clearHistory", HTTP_POST, handleClearMeasurementHistory); // Borrar historial
+    server.on("/wifiList", HTTP_GET, handleWifiListRequest); // Listar redes WiFi
+    server.on("/connectWifi", HTTP_POST, handleConnectWifi); // Intentar conectar (manual)
+    server.on("/saveWifiCredentials", HTTP_POST, handleSaveWifiCredentials); // Guardar credenciales y reiniciar
+    server.on("/controlPump", HTTP_POST, handlePumpControl); // Control manual bomba on/off
+    server.on("/setMeasurementInterval", HTTP_POST, handleMeasurementInterval); // Establecer intervalo
+    server.on("/getMeasurementInterval", HTTP_GET, handleMeasurementInterval); // Obtener intervalo
+    server.on("/listStages", HTTP_GET, handleListStages); // Listar etapas definidas
+    server.on("/getCurrentStage", HTTP_GET, handleGetCurrentStage); // Obtener etapa actual
+    server.on("/setManualStage", HTTP_POST, handleSetManualStage); // Establecer etapa manual
+    server.on("/resetManualStage", HTTP_POST, handleResetManualStage); // Volver a modo automático
+
+    // --- Acciónes ---
+    server.on("/takeMeasurement", HTTP_POST, [](){ // Trigger manual measurement cycle
+         Serial.println("[HTTP] Solicitud /takeMeasurement (POST) recibida.");
+         server.sendHeader("Access-Control-Allow-Origin", "*");
+         controlIndependiente(); // Run the control logic now
+         server.send(200, "application/json", "{\"status\":\"success\", \"message\":\"Measurement cycle triggered\"}");
+    });
+    server.on("/restartSystem", HTTP_POST, []() { // Reiniciar el ESP
+        Serial.println("[HTTP] Solicitud /restartSystem (POST) recibida.");
+        server.sendHeader("Access-Control-Allow-Origin", "*");
+        server.send(200, "application/json", "{\"status\":\"restarting\"}");
         Serial.println("[ACCION] Reiniciando el sistema...");
-        server.send(200, "text/plain", "Reiniciando...");
+        delay(500); // Allow time for response
         ESP.restart();
     });
-    
 
-    handleThresholdRequest();
-    handleSaveWifiCredentials();
-    handleConnectWifi();
-    handleSaveMeasurement();
-    handleLoadMeasurement();
-    handleClearMeasurementHistory();
-    handleWifiListRequest();
-    handleMeasurementInterval();
-    handlePumpControl();
+     // --- Servir Archivos Estáticos desde LittleFS ---
+     // Handler para servir cualquier archivo no encontrado en las rutas anteriores
+     server.onNotFound([]() {
+        String path = server.uri();
+        Serial.print("[HTTP] Solicitud no encontrada, intentando servir archivo estático: "); Serial.println(path);
+        if (path.endsWith("/")) path += "index.html"; // Si es un directorio, intentar servir index.html
 
-    // Endpoints para control manual de etapas
-    // Establecer etapa manual
-    server.on("/setManualStage", HTTP_POST, []() {
-        if (!server.hasArg("plain")) {
-            server.send(400, "text/plain", "Missing JSON");
-            return;
+        String contentType = "text/plain"; // Default content type
+        if(path.endsWith(".html")) contentType = "text/html";
+        else if(path.endsWith(".css")) contentType = "text/css";
+        else if(path.endsWith(".js")) contentType = "application/javascript";
+        else if(path.endsWith(".png")) contentType = "image/png";
+        else if(path.endsWith(".jpg")) contentType = "image/jpeg";
+        else if(path.endsWith(".ico")) contentType = "image/x-icon";
+        else if(path.endsWith(".svg")) contentType = "image/svg+xml";
+
+
+        if (LittleFS.exists(path)) {
+             Serial.print("[HTTP] Sirviendo archivo: "); Serial.println(path);
+             File file = LittleFS.open(path, "r");
+             server.streamFile(file, contentType);
+             file.close();
+        } else {
+             Serial.print("[HTTP] Archivo no encontrado en LittleFS: "); Serial.println(path);
+             // Captive portal redirection (if in AP mode)
+             if (WiFi.getMode() == WIFI_AP) {
+                   Serial.println("[CAPTIVE] Redirigiendo cliente a la página de configuración.");
+                   // Redirect to the root which should serve config.html in AP mode
+                   server.sendHeader("Location", "/", true);
+                   server.send(302, "text/plain", "Redirecting to configuration page");
+             } else {
+                  server.send(404, "text/plain", "404 Not Found");
+             }
+
         }
-
-        String body = server.arg("plain");
-        StaticJsonDocument<200> doc;
-        DeserializationError error = deserializeJson(doc, body);
-        if (error) {
-            server.send(400, "text/plain", "Invalid JSON");
-            return;
-        }
-
-        int stage = doc["stage"];
-        if (stage < 0 || stage >= (sizeof(stages)/sizeof(stages[0]))) {
-            server.send(400, "text/plain", "Invalid stage index");
-            return;
-        }
-
-        manualStageIndex = stage;
-        manualStageControl = true;
-
-        // Guardar en el sistema de archivos para persistencia
-        File configFile = LittleFS.open("/ManualStage.txt", "w");
-        if (!configFile) {
-            server.send(500, "text/plain", "Error saving manual stage");
-            return;
-        }
-        configFile.println(manualStageIndex);
-        configFile.close();
-
-        Serial.print("[INFO] Etapa manual establecida a: ");
-        Serial.println(stages[manualStageIndex].name);
-
-        server.send(200, "application/json", "{\"status\":\"manual stage set\"}");
     });
 
-    // Obtener la etapa actual
-    server.on("/getCurrentStage", HTTP_GET, []() {
-        int days = (millis() - startTime) / 86400000; // Convertir ms a días
-        int stageIndex = getCurrentStage(days);
-        DynamicJsonDocument doc(200);
-        doc["currentStage"] = stages[stageIndex].name;
-        doc["stageIndex"] = stageIndex;
-        doc["manualControl"] = manualStageControl;
-        String response;
-        serializeJson(doc, response);
-        server.send(200, "application/json", response);
-    });
-
-    // Resetear el control manual de etapas
-    server.on("/resetManualStage", HTTP_POST, []() {
-        manualStageControl = false;
-        File configFile = LittleFS.open("/ManualStage.txt", "w");
-        if (!configFile) {
-            Serial.println("[ERROR] No se pudo borrar ManualStage.txt.");
-            server.send(500, "text/plain", "Error resetting manual stage");
-            return;
-        }
-        configFile.close();
-        Serial.println("[INFO] Control manual de etapa desactivado.");
-        server.send(200, "application/json", "{\"status\":\"manual stage reset\"}");
-    });
-
-    // Listar todas las etapas
-    server.on("/listStages", HTTP_GET, []() {
-        DynamicJsonDocument doc(1024);
-        JsonArray stagesArray = doc.to<JsonArray>();
-        for (int i = 0; i < (sizeof(stages)/sizeof(stages[0])); i++) {
-            JsonObject stageObj = stagesArray.createNestedObject();
-            stageObj["index"] = i;
-            stageObj["name"] = stages[i].name;
-            stageObj["duration_days"] = stages[i].duration_days;
-            stageObj["humidityThreshold"] = stages[i].humidityThreshold;
-            stageObj["wateringTimeSec"] = stages[i].wateringTimeSec;
-        }
-        String response;
-        serializeJson(doc, response);
-        server.send(200, "application/json", response);
-    });
 
     // Iniciar el servidor
-    server.serveStatic("/", LittleFS, "/");
     server.begin();
-    Serial.println("[INFO] Servidor HTTP iniciado");
+    Serial.println("[INFO] Servidor HTTP iniciado en puerto 80.");
 }
 
-// Inicia el modo AP para configuración
-void startAPMode() {
-    Serial.println("[ACCION] Iniciando modo AP para configuración...");
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP("Sistema-Riego", "password123");
-    IPAddress apIP = WiFi.softAPIP();
-    Serial.print("[INFO] Punto de acceso iniciado. IP: ");
-    Serial.println(apIP);
-    dnsServer.start(DNS_PORT, "*", apIP);
-}
 
-// Carga la etapa manual desde el archivo al iniciar
-void loadManualStage() {
-    File configFile = LittleFS.open("/ManualStage.txt", "r");
-    if (!configFile) {
-        Serial.println("[INFO] No se encontró ManualStage.txt, el control de etapa es automático.");
-        manualStageControl = false;
-        return;
-    }
-
-    String stageStr = configFile.readStringUntil('\n');
-    configFile.close();
-
-    if (stageStr.length() > 0) {
-        int stage = stageStr.toInt();
-        if (stage >= 0 && stage < (sizeof(stages)/sizeof(stages[0]))) {
-            manualStageIndex = stage;
-            manualStageControl = true;
-            Serial.print("[INFO] Control manual de etapa cargado: ");
-            Serial.println(stages[manualStageIndex].name);
-        } else {
-            Serial.println("[WARN] Etapa manual guardada inválida, desactivando control manual.");
-            manualStageControl = false;
-        }
-    } else {
-        Serial.println("[INFO] ManualStage.txt está vacío, control de etapa es automático.");
-        manualStageControl = false;
-    }
-}
-
-// Función principal de control independiente basada en etapas
-void controlIndependiente() {
-    unsigned long elapsedTime = (millis() - startTime) / 1000;
-    unsigned long totalElapsedTimeHours = elapsedTime / 3600;
-    unsigned long totalElapsedTimeDays = elapsedTime / 86400;
-
-    Serial.println("[ACCION] Tomando medición programada según intervalo.");
-    Serial.print("[INFO] Horas transcurridas: ");
-    Serial.println(totalElapsedTimeHours);
-
-    float humidity = getHumidity();
-    float temperature = getTemperature();
-
-    int stageIndex = getCurrentStage(totalElapsedTimeDays);
-    int currentThreshold = stages[stageIndex].humidityThreshold;
-    int wateringTimeSec = stages[stageIndex].wateringTimeSec;
-
-    Serial.println("[INFO] Parámetros según la etapa actual:");
-    Serial.print("Etapa: ");
-    Serial.println(stages[stageIndex].name);
-    Serial.print("Umbral de humedad: ");
-    Serial.println(currentThreshold);
-    Serial.print("Tiempo de riego: ");
-    Serial.print(wateringTimeSec);
-    Serial.println("s");
-
-    bool localPumpActivated = false;
-    // Usamos una variable estática para simular la última activación
-    static int lastActivation = 0; 
-
-    if (!pumpAutoOff) {
-        if (humidity < currentThreshold) {
-            Serial.println("[ACCION] La humedad está por debajo del umbral, se regará ahora.");
-            activatePump(wateringTimeSec * 1000UL);
-            localPumpActivated = true;
-        } else {
-            int diferencia = (int)totalElapsedTimeHours - lastActivation;
-            if (diferencia > 23) {
-                Serial.println("[ACCION] Han pasado más de 23h sin riego, se regará ahora.");
-                activatePump(wateringTimeSec * 1000UL);
-                localPumpActivated = true;
-            } else {
-                Serial.println("[INFO] No se riega en este momento, la humedad es suficiente y no han pasado 23h desde el último riego.");
-                deactivatePump();
-            }
-        }
-        if (localPumpActivated) {
-            lastActivation = totalElapsedTimeHours;
-        }
-    } else {
-        Serial.println("[INFO] Modo autoOff activo, no se ejecuta el control independiente.");
-    }
-
-    String elapsedTimeString = String(totalElapsedTimeHours) + "h";
-    String measurementString = "{ \"humidity\": " + String(humidity) +
-                               ", \"temperature\": " + String(temperature) +
-                               ", \"timestamp\": \"" + elapsedTimeString +
-                               "\", \"pumpActivated\": " + String(localPumpActivated ? "true" : "false") +
-                               ", \"stage\": \"" + stages[stageIndex].name + "\" }";
-
-    Serial.println("[ACCION] Guardando medición tomada en controlIndependiente:");
-    Serial.println(measurementString);
-
-    if (jsonIndex < MAX_JSON_OBJECTS) {
-        measurements[jsonIndex++] = measurementString;
-        saveMeasurementFile(arrayToString(measurements, MAX_JSON_OBJECTS));
-    } else {
-        Serial.println("[WARN] Array de JSON lleno. Eliminando registros antiguos.");
-        for (int i = 0; i < MAX_JSON_OBJECTS - 100; i++) {
-            measurements[i] = measurements[i + 100];
-        }
-        for (int i = MAX_JSON_OBJECTS - 100; i < MAX_JSON_OBJECTS; i++) {
-            measurements[i] = "";
-        }
-        measurements[MAX_JSON_OBJECTS - 100] = measurementString;
-        jsonIndex = MAX_JSON_OBJECTS - 99;
-    }
-}
-
-// Función para manejar comandos seriales (opcional, si se desea)
+// Función para manejar comandos seriales (opcional)
 void handleSerialCommands() {
     if (Serial.available() > 0) {
         String command = Serial.readStringUntil('\n');
         command.trim();
+        Serial.print("[SERIAL] Comando recibido: "); Serial.println(command);
 
-        if (command.startsWith("SET_STAGE")) {
-            int stage = command.substring(9).toInt(); // Asumiendo el formato "SET_STAGE X"
-            if (stage >= 0 && stage < (sizeof(stages)/sizeof(stages[0]))) {
-                manualStageIndex = stage;
-                manualStageControl = true;
-
-                // Guardar en el sistema de archivos
-                File configFile = LittleFS.open("/ManualStage.txt", "w");
-                if (!configFile) {
-                    Serial.println("[ERROR] No se pudo guardar la etapa manual.");
-                } else {
-                    configFile.println(manualStageIndex);
-                    configFile.close();
-                    Serial.print("[INFO] Etapa manual establecida a: ");
-                    Serial.println(stages[manualStageIndex].name);
-                }
-            } else {
-                Serial.println("[ERROR] Índice de etapa inválido.");
-            }
-        } else if (command == "RESET_STAGE") {
+        if (command.equalsIgnoreCase("STATUS")) {
+            // Print current status summary
+             unsigned long now = millis();
+             unsigned long elapsedSeconds = (now - startTime) / 1000;
+             Serial.println("--- STATUS ---");
+             Serial.print("Uptime: "); Serial.print(elapsedSeconds / 86400); Serial.print("d ");
+             Serial.print((elapsedSeconds % 86400) / 3600); Serial.print("h ");
+             Serial.print((elapsedSeconds % 3600) / 60); Serial.println("m");
+             float h = getHumidity(); float t = getTemperature();
+             Serial.print("Temp: "); Serial.print(t, 1); Serial.print(" C, Humid: "); Serial.print(h, 1); Serial.println(" %");
+             Serial.print("Pump: "); Serial.print(pumpActivated ? "ON" : "OFF"); if (pumpAutoOff) Serial.print(" (Auto)"); Serial.println();
+             int stageIdx = getCurrentStageIndex(elapsedSeconds / 86400);
+             Serial.print("Stage: "); Serial.print(stages[stageIdx].name); Serial.print(" ("); Serial.print(manualStageControl ? "Manual" : "Auto"); Serial.println(")");
+             Serial.print("WiFi: "); Serial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "Disconnected");
+             Serial.print("Measurements: "); Serial.println(jsonIndex);
+             Serial.print("Next Measure (ms): "); Serial.println(nextMeasureTimestamp);
+             Serial.println("--------------");
+        } else if (command.equalsIgnoreCase("MEASURE")) {
+             Serial.println("[SERIAL] Forzando ciclo de medición...");
+             controlIndependiente();
+        } else if (command.equalsIgnoreCase("PUMP ON")) {
+            Serial.println("[SERIAL] Encendiendo bomba manualmente (30s)...");
+             activatePump(30000); // Activate for 30 seconds
+        } else if (command.equalsIgnoreCase("PUMP OFF")) {
+             Serial.println("[SERIAL] Apagando bomba manualmente...");
+             deactivatePump();
+        } else if (command.startsWith("SET STAGE ")) {
+             int stage = command.substring(10).toInt();
+             if (stage >= 0 && stage < numStages) {
+                 Serial.print("[SERIAL] Estableciendo etapa manual a: "); Serial.println(stages[stage].name);
+                 saveManualStage(stage);
+             } else {
+                 Serial.println("[ERROR] Índice de etapa inválido.");
+             }
+        } else if (command.equalsIgnoreCase("RESET STAGE")) {
+            Serial.println("[SERIAL] Desactivando control manual de etapa.");
             manualStageControl = false;
-            File configFile = LittleFS.open("/ManualStage.txt", "w");
-            if (!configFile) {
-                Serial.println("[ERROR] No se pudo borrar ManualStage.txt.");
-            } else {
-                configFile.close();
-                Serial.println("[INFO] Control manual de etapa desactivado.");
-            }
-        } else {
-            Serial.println("[WARN] Comando desconocido.");
+            if (LittleFS.exists("/ManualStage.txt")) LittleFS.remove("/ManualStage.txt");
+        } else if (command.equalsIgnoreCase("CLEAR")) {
+            Serial.println("[SERIAL] Borrando historial de mediciones...");
+             handleClearMeasurementHistory(); // Call the same logic as the HTTP handler
+        } else if (command.equalsIgnoreCase("RESTART")) {
+             Serial.println("[SERIAL] Reiniciando sistema...");
+             ESP.restart();
+        }
+         else {
+            Serial.println("[WARN] Comando serial desconocido.");
+            Serial.println(" Comandos disponibles: STATUS, MEASURE, PUMP ON, PUMP OFF, SET STAGE <index>, RESET STAGE, CLEAR, RESTART");
         }
     }
 }
