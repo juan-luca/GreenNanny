@@ -578,15 +578,32 @@ async function updateUI() {
                 if (measurements.length > 0) {
                      // Limit displayed entries and reverse for newest first
                      const historyHtml = measurements
-                        .slice(-HISTORY_MAX_ENTRIES).reverse()
-                        .map(m => `
-                            <div class="measurement-history-entry" role="listitem">
-                                <span class="timestamp" title="${m.epoch_ms ? new Date(m.epoch_ms).toLocaleString() : ''}">${formatTimestampForHistory(m.epoch_ms)}</span>
-                                <span class="data-point temperature" title="Temperature"><i class="fas fa-thermometer-half text-danger"></i> ${m.temperature != null ? m.temperature.toFixed(1) : '-'}°C</span>
-                                <span class="data-point humidity" title="Humidity"><i class="fas fa-tint text-primary"></i> ${m.humidity != null ? m.humidity.toFixed(1) : '-'}%</span>
-                                ${m.pumpActivated ? '<span class="data-point pump-info" title="Pump Activated"><i class="fas fa-tint-slash text-warning"></i> Pump On</span>' : ''}
-                                ${m.stage ? `<span class="data-point stage-info" title="Plant Stage"><i class="fas fa-leaf text-success"></i> ${m.stage}</span>` : ''}
-                            </div>`).join('');
+  .slice(-HISTORY_MAX_ENTRIES).reverse()
+  .map(m => `
+    <div class="measurement-history-entry" role="listitem">
+      <span class="timestamp" title="${m.epoch_ms ? new Date(m.epoch_ms).toLocaleString() : ''}">
+        ${formatTimestampForHistory(m.epoch_ms)}
+      </span>
+      <span class="data-point temperature" title="Temperature">
+        <i class="fas fa-thermometer-half text-danger"></i>
+        ${m.temperature != null
+           ? parseFloat(m.temperature).toFixed(1)
+           : '-'}°C
+      </span>
+      <span class="data-point humidity" title="Humidity">
+        <i class="fas fa-tint text-primary"></i>
+        ${m.humidity != null
+           ? parseFloat(m.humidity).toFixed(1)
+           : '-'}%
+      </span>
+      ${m.pumpActivated
+         ? '<span class="data-point pump-info"><i class="fas fa-tint-slash"></i> Pump On</span>'
+         : ''}
+      ${m.stage
+         ? `<span class="data-point stage-info"><i class="fas fa-leaf"></i> ${m.stage}</span>`
+         : ''}
+    </div>
+  `).join('');
                      El.measurementHistory.innerHTML = historyHtml;
                      // Scroll to bottom (most recent) after update
                      El.measurementHistory.scrollTop = El.measurementHistory.scrollHeight;

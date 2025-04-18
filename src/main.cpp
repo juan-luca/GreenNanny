@@ -24,7 +24,7 @@ String measurements[MAX_JSON_OBJECTS];
 int jsonIndex = 0;
 
 // Configuración de red estática (si se usan credenciales guardadas)
-IPAddress ip(192, 168, 0, 78);
+IPAddress ip(192, 168, 0, 79);
 IPAddress gateway(192, 168, 0, 1);
 IPAddress subnet(255, 255, 255, 0);
 
@@ -509,8 +509,8 @@ void loadWifiCredentials() {
     WiFi.begin(ssid.c_str(), password.c_str());
 
     // Intentar configuración estática (descomentar si se desea IP fija)
-    // WiFi.config(ip, gateway, subnet);
-    // Serial.println("[INFO] Intentando configuración IP estática.");
+     WiFi.config(ip, gateway, subnet);
+    Serial.println("[INFO] Intentando configuración IP estática.");
 
 
     int attempts = 0;
@@ -732,95 +732,101 @@ void controlIndependiente() {
     unsigned long now = millis();
     unsigned long elapsedMillis = now - startTime;
     unsigned long elapsedSeconds = elapsedMillis / 1000;
-    unsigned long elapsedHours = elapsedSeconds / 3600;
-    unsigned long elapsedDays = elapsedSeconds / 86400;
+    unsigned long elapsedHours   = elapsedSeconds / 3600;
+    unsigned long elapsedDays    = elapsedSeconds / 86400;
+
+    static unsigned long failureStartTime = 0; // Timestamp de primer fallo
 
     Serial.println("\n[CONTROL] Iniciando ciclo de control independiente...");
     Serial.print("[INFO] Tiempo transcurrido: "); Serial.print(elapsedDays); Serial.print("d ");
     Serial.print(elapsedHours % 24); Serial.print("h ");
     Serial.print((elapsedSeconds % 3600) / 60); Serial.println("m");
 
-
-    // 1. Tomar Medición Actual
-    Serial.println("[CONTROL] Tomando lecturas de sensores...");
-    float humidity = getHumidity();
+    // 1. Tomar lecturas (real o simulada)
+    float humidity    = getHumidity();
     float temperature = getTemperature();
-    lastMeasurementTimestamp = now; // Update last measurement time
+    lastMeasurementTimestamp = now;
 
-
-    // Check sensor read validity
-    if (humidity < 0.0 || temperature <= -90.0) {
-         Serial.println("[ERROR] Lecturas de sensor inválidas. Abortando ciclo de control.");
-         // Don't save measurement or attempt watering
-         return;
+    // 2. Detectar fallo de sensor
+    bool sensorValid = !(humidity < 0.0 || temperature <= -90.0);
+    if (!sensorValid) {
+        Serial.println("[WARN] Falla en lectura de sensor. Se registrará medición de fallo.");
+        if (failureStartTime == 0) {
+            failureStartTime = now; // Marca inicio de la serie de fallos
+        }
+    } else {
+        // Si recupera, resetea el contador de fallo
+        failureStartTime = 0;
     }
 
-    // 2. Determinar Etapa y Parámetros Actuales
+    // 3. Determinar etapa y parámetros
     int stageIndex = getCurrentStageIndex(elapsedDays);
-    const Stage& currentStage = stages[stageIndex];
-    int currentThreshold = currentStage.humidityThreshold;
-    int wateringTimeSec = currentStage.wateringTimeSec;
-    unsigned long wateringTimeMs = wateringTimeSec * 1000UL;
+    const Stage& currentStage   = stages[stageIndex];
+    int currentThreshold        = currentStage.humidityThreshold;
+    unsigned long wateringTimeMs = currentStage.wateringTimeSec * 1000UL;
 
-    Serial.println("[INFO] Parámetros para la etapa actual:");
-    Serial.print("  Etapa: "); Serial.println(currentStage.name);
-    Serial.print("  Umbral Humedad Mín (%): "); Serial.println(currentThreshold);
-    Serial.print("  Tiempo Riego (s): "); Serial.println(wateringTimeSec);
+    Serial.print("[INFO] Etapa: "); Serial.println(currentStage.name);
+    Serial.print("       Umbral humedad: "); Serial.print(currentThreshold); Serial.println("%");
+    Serial.print("       Duración riego: "); Serial.print(currentStage.wateringTimeSec); Serial.println("s");
 
-    // 3. Decidir si Regar (Solo si la bomba no está ya en ciclo Auto-Off)
+    // 4. Decidir riego
     bool needsWatering = false;
-    if (!pumpAutoOff) { // Only evaluate watering if pump isn't already running on timer
-        if (humidity < currentThreshold) {
-            Serial.print("[DECISION] Humedad ("); Serial.print(humidity, 1);
-            Serial.print("%) por debajo del umbral ("); Serial.print(currentThreshold);
-            Serial.println("%). Se necesita riego.");
+    if (!pumpAutoOff) {
+        if (sensorValid && humidity < currentThreshold) {
+            // Humedad bajo umbral → riego normal
+            Serial.println("[DECISION] Humedad bajo umbral. Se activa riego.");
             needsWatering = true;
+        }
+        else if (!sensorValid) {
+            // Sensor fuera de servicio
+            unsigned long downTime = now - failureStartTime;
+            if (downTime >= 86400000UL) { // 24 h en ms
+                Serial.println("[DECISION] 24 h de fallo continuado. Forzando riego.");
+                needsWatering = true;
+            } else {
+                Serial.println("[DECISION] Sensor inválido pero no han pasado 24 h de fallo. No riega.");
+            }
         } else {
-             Serial.print("[DECISION] Humedad ("); Serial.print(humidity, 1);
-             Serial.print("%) está por encima o igual al umbral ("); Serial.print(currentThreshold);
-             Serial.println("%). No se necesita riego por umbral.");
-            // Aquí podríamos añadir la lógica de riego forzado cada X horas si se desea,
-            // pero la mantenemos simple por ahora: regar solo si baja del umbral.
-             // Ejemplo Lógica 24h:
-             // static unsigned long lastWateringTime = 0;
-             // if (now - lastWateringTime > 86400000UL) { // Mas de 24h sin regar
-             //    Serial.println("[DECISION] Han pasado >24h sin riego. Forzando riego.");
-             //    needsWatering = true;
-             // }
+            // Sensor OK y humedad suficiente
+            Serial.println("[DECISION] Humedad suficiente. No riega.");
         }
 
         if (needsWatering) {
             activatePump(wateringTimeMs);
-            // if (now - lastWateringTime > 86400000UL) lastWateringTime = now; // Update last watering time if forced
         } else {
-             // Asegurarse que la bomba esté apagada si no se necesita riego
-             // y no está en ciclo auto-off (aunque la condición externa ya lo cubre)
-             deactivatePump();
+            deactivatePump();
         }
-
     } else {
-        Serial.println("[INFO] Ciclo de control omitido (bomba en modo Auto-Off).");
-        // needsWatering remains false as we didn't activate it now
+        Serial.println("[INFO] Bomba en modo Auto‑Off, se omite lógica de riego.");
     }
 
-    // 4. Guardar la Medición
-    // Crear JSON string para la medición
-    // Usar StaticJsonDocument para asegurar formato correcto y evitar errores de string manual
-    StaticJsonDocument<256> doc; // Increased size for more fields
-    doc["humidity"] = serialized(String(humidity, 1)); // Format to 1 decimal place
-    doc["temperature"] = serialized(String(temperature, 1));
-    doc["timestamp"] = String(elapsedHours) + "h" + String((elapsedSeconds % 3600) / 60) + "m"; // e.g., "12h30m"
-    doc["pumpActivated"] = needsWatering; // Record if watering was TRIGGERED in THIS cycle
-    doc["stage"] = currentStage.name;
-    doc["epoch_ms"] = now; // Add epoch timestamp
+   // 5. Registrar la medición (incluyendo fallos)
+StaticJsonDocument<256> doc;
 
-    String measurementString;
-    serializeJson(doc, measurementString);
+// Humedad y temperatura: número formateado o JSON null
+if (sensorValid) {
+    doc["temperature"] = temperature;  // a float → JSON number
+doc["humidity"]    = humidity;     // a float → JSON number
 
-    saveMeasurement(measurementString);
-
-    Serial.println("[CONTROL] Ciclo de control independiente finalizado.");
+} else {
+    doc["humidity"]    = nullptr;  // esto genera un JSON null
+    doc["temperature"] = nullptr;
 }
+
+// Resto de campos siempre presentes
+doc["timestamp"]    = String(elapsedHours) + "h" + String((elapsedSeconds % 3600) / 60) + "m";
+doc["pumpActivated"] = needsWatering;
+doc["stage"]         = currentStage.name;
+doc["epoch_ms"]      = now;
+
+// Serializar y guardar
+String measurementString;
+serializeJson(doc, measurementString);
+saveMeasurement(measurementString);
+
+    Serial.println("[CONTROL] Ciclo de control finalizado.");
+}
+
 
 // --- Handlers para Endpoints HTTP ---
 
