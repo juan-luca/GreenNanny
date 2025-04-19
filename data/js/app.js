@@ -5,6 +5,15 @@ const HISTORY_MAX_ENTRIES = 100; // Max entries displayed in the log
 const TOAST_TIMEOUT = 5000;     // How long toasts stay visible (ms)
 const FETCH_TIMEOUT = 8000;     // API fetch timeout (ms)
 
+let clientStart = Date.now();
+let lastDisplay = clientStart;
+//const measurementIntervalMs = measurementInterval * 3600_000; // p. ej. 3 h → 10 800 000 ms
+// Global para rastrear cuántas mediciones hemos procesado
+let prevMeasurementCount = 0;
+// fixedTimestamps almacena { rawEpochMs: fixedDisplayMs, ... } y persiste en localStorage
+let fixedTimestamps = JSON.parse(localStorage.getItem('fixedTimestamps') || '{}');
+// Cola de marcas de hora para mediciones manuales
+let manualTimestampQueue = [];
 // --- Element Selectors (Cached) ---
 const El = {
     // Small Boxes / Widgets
@@ -481,167 +490,161 @@ function updateChart(measurements) {
     measurementChart.update();
 }
 
-// --- Main UI Update Function ---
-async function updateUI() {
+
+// Registrar el instante de la medición manual
+El.takeMeasurementBtn?.addEventListener('click', () => {
+    manualTimestampQueue.push(Date.now());
+  });
+  
+  async function updateUI() {
     console.log("Updating UI...");
     try {
-        // Fetch core data and history in parallel
-        const [data, measurementsResponse] = await Promise.allSettled([
-            fetchData('/data'),
-            fetchData('/loadMeasurement')
-        ]);
-
-        // --- Process Core Data ---
-        if (data.status === 'fulfilled' && data.value) {
-            const coreData = data.value;
-
-            // Update Page Title (Subtle indication of pump status)
-            if (El.pageTitle) El.pageTitle.textContent = `Green Nanny ${coreData.pumpStatus ? '💧' : '🌿'}`;
-
-            // Update Sensor Readings & Derived Values
-            updateElementText(El.temp, coreData.temperature, '°C');
-            updateElementText(El.humidity, coreData.humidity, '%');
-            updateElementText(El.vpd, coreData.vpd, ' kPa', 2); // VPD needs more precision
-            updateElementText(El.pumpActivationCount, coreData.pumpActivationCount, '', 0);
-            updateElementText(El.totalElapsedTime, coreData.elapsedTime, '', 0, 'N/A', formatElapsedTime);
-
-             // Update Stage Info from core data
-             currentStageData = {
-                 name: coreData.currentStageName,
-                 index: coreData.currentStageIndex,
-                 threshold: coreData.currentStageThreshold,
-                 watering: coreData.currentStageWateringSec,
-                 manual: coreData.manualStageControl
-             };
-             updateElementText(El.currentStageLabel, currentStageData.name, '', null, '-'); // No precision for name
-             if(El.currentStageParams) {
-                 El.currentStageParams.textContent = `Threshold: ${currentStageData.threshold}% | Water: ${currentStageData.watering}s`;
-             }
-             if(El.manualControlIndicator) {
-                 El.manualControlIndicator.style.display = currentStageData.manual ? 'inline-block' : 'none';
-             }
-             if (El.stageModeIndicator) {
-                El.stageModeIndicator.textContent = currentStageData.manual ? 'Manual' : 'Auto';
-                El.stageModeIndicator.className = `badge ${currentStageData.manual ? 'bg-warning text-dark' : 'bg-info'}`;
-             }
-
-
-            // Update Pump Status Indicator
-            if (El.pumpStatusIndicator) {
-                const pumpOn = coreData.pumpStatus ?? false;
-                El.pumpStatusIndicator.textContent = pumpOn ? 'ON' : 'OFF';
-                El.pumpStatusIndicator.className = `badge ${pumpOn ? 'bg-success' : 'bg-secondary'}`;
-                El.pumpStatusIndicator.classList.toggle('pulsing', pumpOn);
-                // Disable/Enable buttons based on status
-                if(El.activatePumpBtn) El.activatePumpBtn.disabled = pumpOn;
-                if(El.deactivatePumpBtn) El.deactivatePumpBtn.disabled = !pumpOn;
-            }
-
-            // Update Last Measurement Time
-            updateElementText(El.lastMeasurementTime, coreData.lastMeasurementTimestamp, '', 0, '-', (ts) => {
-                 return ts ? new Date(ts).toLocaleString() : '-';
-             });
-
-             // Update WiFi Status
-            if (El.wifiStatus) {
-                 if (coreData.wifiRSSI != null && coreData.wifiRSSI !== 0) {
-                    const rssi = coreData.wifiRSSI;
-                    let signalStrengthIcon = 'fa-wifi text-success'; // Strong
-                    let signalText = `Connected (${rssi} dBm)`;
-                    if (rssi < -80) { signalStrengthIcon = 'fa-wifi text-danger'; signalText = `Weak (${rssi} dBm)`; }
-                    else if (rssi < -70) { signalStrengthIcon = 'fa-wifi text-warning'; signalText = `Okay (${rssi} dBm)`;}
-                    El.wifiStatus.innerHTML = `<i class="fas ${signalStrengthIcon}"></i> ${signalText}`;
-                 } else if (coreData.deviceIP && coreData.deviceIP.startsWith('192.168.')) { // AP Mode?
-                    El.wifiStatus.innerHTML = `<i class="fas fa-network-wired text-info"></i> AP Mode (${coreData.deviceIP})`; // Using network icon for AP
-                 }
-                 else {
-                     El.wifiStatus.innerHTML = `<i class="fas fa-wifi text-secondary"></i> Disconnected`;
-                 }
-            }
-
-             // Update Device IP in footer
-             updateElementText(El.deviceIP, coreData.deviceIP || window.location.hostname);
-
-        } else {
-            console.error('Failed to fetch core data:', data.reason);
-             // Optionally show error state in UI elements
-             updateElementText(El.temp, null, '°C', 1, 'Error');
-             updateElementText(El.humidity, null, '%', 1, 'Error');
-             if(El.wifiStatus) El.wifiStatus.innerHTML = `<i class="fas fa-exclamation-triangle text-danger"></i> Error`;
-             // Maybe show a persistent error banner?
+      // 0) Asegurarnos de tener currentIntervalValue
+      if (currentIntervalValue === null) {
+        await fetchAndUpdateIntervalDisplay();
+      }
+  
+      // 1) Traer datos core y mediciones
+      const [dataRes, histRes] = await Promise.allSettled([
+        fetchData('/data'),
+        fetchData('/loadMeasurement')
+      ]);
+  
+      // --- Procesar coreData ---
+      if (dataRes.status === 'fulfilled' && dataRes.value) {
+        const coreData = dataRes.value;
+        // Título
+        if (El.pageTitle) El.pageTitle.textContent = `Green Nanny ${coreData.pumpStatus ? '💧' : '🌿'}`;
+        // Widgets básicos
+        updateElementText(El.temp, coreData.temperature, '°C');
+        updateElementText(El.humidity, coreData.humidity, '%');
+        updateElementText(El.vpd, coreData.vpd, ' kPa', 2);
+        updateElementText(El.pumpActivationCount, coreData.pumpActivationCount, '', 0);
+        updateElementText(El.totalElapsedTime, coreData.elapsedTime, '', 0, 'N/A', formatElapsedTime);
+        // Etapa
+        const cs = {
+          name: coreData.currentStageName,
+          threshold: coreData.currentStageThreshold,
+          watering: coreData.currentStageWateringSec,
+          manual: coreData.manualStageControl
+        };
+        updateElementText(El.currentStageLabel, cs.name, '', null, '-');
+        if (El.currentStageParams) El.currentStageParams.textContent = `Threshold: ${cs.threshold}% | Water: ${cs.watering}s`;
+        if (El.manualControlIndicator) El.manualControlIndicator.style.display = cs.manual ? 'inline-block' : 'none';
+        if (El.stageModeIndicator) {
+          El.stageModeIndicator.textContent = cs.manual ? 'Manual' : 'Auto';
+          El.stageModeIndicator.className = `badge ${cs.manual ? 'bg-warning text-dark' : 'bg-info'}`;
         }
-
-        // --- Process Measurement History ---
-        if (El.measurementHistory) {
-            if (measurementsResponse.status === 'fulfilled' && measurementsResponse.value && Array.isArray(measurementsResponse.value)) {
-                const measurements = measurementsResponse.value;
-                if (measurements.length > 0) {
-                     // Limit displayed entries and reverse for newest first
-                     const historyHtml = measurements
-  .slice(-HISTORY_MAX_ENTRIES).reverse()
-  .map(m => `
-    <div class="measurement-history-entry" role="listitem">
-      <span class="timestamp" title="${m.epoch_ms ? new Date(m.epoch_ms).toLocaleString() : ''}">
-        ${formatTimestampForHistory(m.epoch_ms)}
-      </span>
-      <span class="data-point temperature" title="Temperature">
-        <i class="fas fa-thermometer-half text-danger"></i>
-        ${m.temperature != null
-           ? parseFloat(m.temperature).toFixed(1)
-           : '-'}°C
-      </span>
-      <span class="data-point humidity" title="Humidity">
-        <i class="fas fa-tint text-primary"></i>
-        ${m.humidity != null
-           ? parseFloat(m.humidity).toFixed(1)
-           : '-'}%
-      </span>
-      ${m.pumpActivated
-         ? '<span class="data-point pump-info"><i class="fas fa-tint-slash"></i> Pump On</span>'
-         : ''}
-      ${m.stage
-         ? `<span class="data-point stage-info"><i class="fas fa-leaf"></i> ${m.stage}</span>`
-         : ''}
-    </div>
-  `).join('');
-                     El.measurementHistory.innerHTML = historyHtml;
-                     // Scroll to bottom (most recent) after update
-                     El.measurementHistory.scrollTop = El.measurementHistory.scrollHeight;
-                } else {
-                     El.measurementHistory.innerHTML = `<div class='measurement-history-entry text-muted'>No measurement history recorded.</div>`;
-                }
-            } else {
-                 console.error('Failed to fetch or parse measurements:', measurementsResponse.reason);
-                 El.measurementHistory.innerHTML = `<div class='measurement-history-entry text-danger'>Error loading history.</div>`;
-            }
+        // Bomba
+        if (El.pumpStatusIndicator) {
+          const on = coreData.pumpStatus ?? false;
+          El.pumpStatusIndicator.textContent = on ? 'ON' : 'OFF';
+          El.pumpStatusIndicator.className = `badge ${on ? 'bg-success' : 'bg-secondary'}`;
+          El.pumpStatusIndicator.classList.toggle('pulsing', on);
+          if (El.activatePumpBtn) El.activatePumpBtn.disabled = on;
+          if (El.deactivatePumpBtn) El.deactivatePumpBtn.disabled = !on;
         }
-
-        // --- Update Chart ---
-        if (El.measurementChartCtx) {
-            if (measurementsResponse.status === 'fulfilled' && Array.isArray(measurementsResponse.value)) {
-                updateChart(measurementsResponse.value);
-            } else {
-                // Optionally clear chart or show error state if history failed
-                console.warn("Chart cannot be updated, history data missing.");
-                 // Maybe clear the chart: if(measurementChart) { measurementChart.data.labels = []; measurementChart.data.datasets.forEach(ds => ds.data = []); measurementChart.update(); }
-            }
+        // WiFi
+        if (El.wifiStatus) {
+          const rssi = coreData.wifiRSSI;
+          if (rssi != null && rssi !== 0) {
+            let icon='fa-wifi text-success', txt=`Connected (${rssi} dBm)`;
+            if (rssi < -80) { icon='fa-wifi text-danger'; txt=`Weak (${rssi} dBm)`; }
+            else if (rssi < -70) { icon='fa-wifi text-warning'; txt=`Okay (${rssi} dBm)`; }
+            El.wifiStatus.innerHTML = `<i class="fas ${icon}"></i> ${txt}`;
+          } else {
+            El.wifiStatus.innerHTML = `<i class="fas fa-wifi text-secondary"></i> Disconnected`;
+          }
         }
-
-        // --- Update Interval Info (If not already fetched) ---
-        if (currentIntervalValue === null && El.intervalInput) {
-             await fetchAndUpdateIntervalDisplay();
+      } else {
+        console.error('Failed coreData:', dataRes.reason);
+      }
+  
+      // --- Historial de mediciones ---
+      let measurements = [];
+      if (histRes.status === 'fulfilled' && Array.isArray(histRes.value)) {
+        measurements = histRes.value;
+      } else {
+        console.warn('No history:', histRes);
+      }
+  
+      // Si limpiaron el backend, reinicio los arrays
+      if (measurements.length < prevMeasurementCount) {
+        fixedTimestamps = {};
+        manualTimestampQueue = [];
+        prevMeasurementCount = 0;
+      }
+  
+      const now = Date.now();
+      const hours = Number.isFinite(currentIntervalValue) ? currentIntervalValue : 3;
+      const intervalMs = hours * 3600000;
+      const epochThreshold = 1e12;
+  
+      // Fijar timestamps **una sola vez** por cada rawEpochMs
+      measurements.forEach((m, idx) => {
+        const raw = m.epoch_ms;
+        const key = String(raw);
+        if (fixedTimestamps[key] === undefined) {
+          // Si fue manual y coincide con el próximo índice, uso hora real
+          if (idx === prevMeasurementCount && manualTimestampQueue.length) {
+            fixedTimestamps[key] = manualTimestampQueue.shift();
+          } else if (raw > epochThreshold) {
+            // epoch real válido del backend
+            fixedTimestamps[key] = raw;
+          } else {
+            // fallback: repartir según intervalo
+            const posFromEnd = measurements.length - idx - 1;
+            fixedTimestamps[key] = now - posFromEnd * intervalMs;
+          }
         }
-
-
-    } catch (error) {
-        console.error('Unhandled error during UI update:', error);
-        showToast('An unexpected error occurred while updating the dashboard.', 'error');
+      });
+  
+      // Persisto en localStorage para que sobreviva al reload
+      localStorage.setItem('fixedTimestamps', JSON.stringify(fixedTimestamps));
+  
+      // Construyo array de timestamps de display en orden
+      const displayTimestamps = measurements.map(m => fixedTimestamps[String(m.epoch_ms)]);
+  
+      // Renderizo historial
+      if (El.measurementHistory) {
+        const start = Math.max(0, measurements.length - HISTORY_MAX_ENTRIES);
+        const sliceMeas = measurements.slice(start).reverse();
+        const sliceTimes = displayTimestamps.slice(start).reverse();
+        const html = sliceMeas.map((m, i) => {
+          const ts = sliceTimes[i];
+          return `
+            <div class="measurement-history-entry">
+              <span class="timestamp">${new Date(ts).toLocaleString()}</span>
+              <span class="data-point"><i class="fas fa-thermometer-half"></i>${m.temperature?.toFixed(1)}°C</span>
+              <span class="data-point"><i class="fas fa-tint"></i>${m.humidity?.toFixed(1)}%</span>
+              ${m.pumpActivated ? '<span class="data-point pump-info"><i class="fas fa-play"></i>Pump</span>' : ''}
+            </div>
+          `;
+        }).join('') || `<div class="measurement-history-entry text-muted">No history recorded.</div>`;
+  
+        El.measurementHistory.innerHTML = html;
+        El.measurementHistory.scrollTop = El.measurementHistory.scrollHeight;
+      }
+  
+      // Actualizar “última medición” solo si hay nuevas
+      if (measurements.length > prevMeasurementCount) {
+        const lastTs = displayTimestamps[displayTimestamps.length - 1];
+        if (El.lastMeasurementTime) {
+          El.lastMeasurementTime.textContent = new Date(lastTs).toLocaleString();
+        }
+        prevMeasurementCount = measurements.length;
+      }
+  
+      // --- Gráfico ---
+      updateChart(measurements);
+  
+    } catch (err) {
+      console.error('Error en updateUI:', err);
     } finally {
-        // Schedule next refresh
-        clearTimeout(refreshTimeoutId);
-        refreshTimeoutId = setTimeout(updateUI, REFRESH_INTERVAL);
+      clearTimeout(refreshTimeoutId);
+      refreshTimeoutId = setTimeout(updateUI, REFRESH_INTERVAL);
     }
-}
+  }
 
 // Function to fetch and update the displayed interval
 async function fetchAndUpdateIntervalDisplay() {
