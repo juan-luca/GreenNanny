@@ -1,3 +1,5 @@
+// --- START OF FILE app.js ---
+
 const BASE_URL = `http://${window.location.hostname}`; // Use device IP automatically
 const REFRESH_INTERVAL = 10000; // Refresh data every 10 seconds
 const CHART_MAX_POINTS = 150;   // Max data points on the chart
@@ -5,15 +7,6 @@ const HISTORY_MAX_ENTRIES = 100; // Max entries displayed in the log
 const TOAST_TIMEOUT = 5000;     // How long toasts stay visible (ms)
 const FETCH_TIMEOUT = 8000;     // API fetch timeout (ms)
 
-let clientStart = Date.now();
-let lastDisplay = clientStart;
-//const measurementIntervalMs = measurementInterval * 3600_000; // p. ej. 3 h → 10 800 000 ms
-// Global para rastrear cuántas mediciones hemos procesado
-let prevMeasurementCount = 0;
-// fixedTimestamps almacena { rawEpochMs: fixedDisplayMs, ... } y persiste en localStorage
-let fixedTimestamps = JSON.parse(localStorage.getItem('fixedTimestamps') || '{}');
-// Cola de marcas de hora para mediciones manuales
-let manualTimestampQueue = [];
 // --- Element Selectors (Cached) ---
 const El = {
     // Small Boxes / Widgets
@@ -216,8 +209,7 @@ function setLoadingState(buttonElement, isLoading) {
         buttonElement.disabled = true;
         buttonElement.setAttribute('aria-busy', 'true');
         // Keep original content, append loader
-        const originalContent = buttonElement.innerHTML;
-         // Prevent adding multiple loaders
+        // Prevent adding multiple loaders
         if (!loader) {
              loader = document.createElement('span');
              loader.className = loaderClass;
@@ -225,20 +217,12 @@ function setLoadingState(buttonElement, isLoading) {
              loader.setAttribute('aria-hidden', 'true'); // Hide decorative loader from screen readers
              buttonElement.appendChild(loader);
         }
-        // Store original content if needed for restoration, but often not necessary
-        // buttonElement.dataset.originalHTML = originalContent;
-
     } else {
         buttonElement.disabled = false;
         buttonElement.removeAttribute('aria-busy');
         if (loader) {
             loader.remove();
         }
-         // Restore original HTML if it was stored and modified
-         // if (buttonElement.dataset.originalHTML) {
-         //     buttonElement.innerHTML = buttonElement.dataset.originalHTML;
-         //     delete buttonElement.dataset.originalHTML;
-         // }
     }
 }
 
@@ -255,32 +239,53 @@ function formatElapsedTime(totalSeconds) {
     const d = Math.floor(totalSeconds / (3600 * 24));
     const h = Math.floor((totalSeconds % (3600 * 24)) / 3600);
     const m = Math.floor((totalSeconds % 3600) / 60);
-    // const s = Math.floor(totalSeconds % 60); // Usually not needed for uptime
 
     let parts = [];
     if (d > 0) parts.push(`${d}d`);
     if (h > 0) parts.push(`${h}h`);
-    if (m > 0 || (d === 0 && h === 0)) parts.push(`${m}m`); // Show minutes if < 1h or if there are hours/days
-    // if (parts.length === 0) parts.push(`${s}s`); // Show seconds only if < 1 minute
+    if (m > 0 || (d === 0 && h === 0)) parts.push(`${m}m`);
 
-    return parts.length > 0 ? parts.join(' ') : '0m'; // Default to 0m if very short
+    return parts.length > 0 ? parts.join(' ') : '0m';
 }
 
 
+/**
+ * Formats an epoch timestamp (milliseconds UTC) for display, explicitly using UTC.
+ * Shows HH:MM for today (UTC), or Mon DD, HH:MM (UTC) for older dates.
+ * Includes year if not the current year (UTC).
+ * @param {number} epochMs - Timestamp in milliseconds since the epoch (UTC).
+ * @returns {string} Formatted date/time string in UTC.
+ */
 function formatTimestampForHistory(epochMs) {
-     if (!epochMs || isNaN(epochMs)) return '?:??';
+     if (!epochMs || isNaN(epochMs) || epochMs < 1e12) return '?:??'; // Basic check for valid epoch ms
      const date = new Date(epochMs);
-     // Format like "15:30" or "Mar 10, 15:30" if older than today
-     const now = new Date();
-     const isToday = date.getDate() === now.getDate() &&
-                     date.getMonth() === now.getMonth() &&
-                     date.getFullYear() === now.getFullYear();
 
-     const timeFormat = { hour: '2-digit', minute: '2-digit', hour12: false };
-     if (isToday) {
-         return date.toLocaleTimeString([], timeFormat);
+     // --- Get components in UTC ---
+     const year = date.getUTCFullYear();
+     const month = date.getUTCMonth(); // 0-11
+     const day = date.getUTCDate();
+     const hours = date.getUTCHours().toString().padStart(2, '0');
+     const minutes = date.getUTCMinutes().toString().padStart(2, '0');
+
+     // --- Compare with the current date in UTC ---
+     const now = new Date();
+     const isTodayUTC = date.getUTCDate() === now.getUTCDate() &&
+                        date.getUTCMonth() === now.getUTCMonth() &&
+                        date.getUTCFullYear() === now.getUTCFullYear();
+
+     const timeString = `${hours}:${minutes}`;
+
+     if (isTodayUTC) {
+         return `${timeString} UTC`; // Only HH:MM for today (indicate UTC)
      } else {
-         return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + date.toLocaleTimeString([], timeFormat);
+         // Format more explicitly for past dates
+         const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+         const monthShort = monthNames[month]; // Use UTC month
+         let datePart = `${monthShort} ${day}`;
+         if (year !== now.getUTCFullYear()) { // Compare UTC year
+             datePart += `, ${year}`;
+         }
+         return `${datePart}, ${timeString} UTC`; // Indicate UTC
      }
 }
 
@@ -291,6 +296,8 @@ function updateElementText(element, value, unit = '', precision = 1, naValue = '
     let valueChanged = false;
 
     try {
+        const currentValue = element.textContent; // Get current text before update
+
         if (formatter && value != null) { // Use formatter if value is not null/undefined
             text = formatter(value);
         } else if (value != null && !isNaN(value)) { // Default number formatting
@@ -298,8 +305,9 @@ function updateElementText(element, value, unit = '', precision = 1, naValue = '
         } else if (value != null) { // Handle non-numeric values directly (like stage name)
             text = `${value}${unit ? ` ${unit}` : ''}`;
         }
+
         // Use === for stricter comparison, handle potential type differences if needed
-        if (element.textContent !== text) {
+        if (currentValue !== text) {
             element.textContent = text;
             valueChanged = true;
         }
@@ -311,14 +319,13 @@ function updateElementText(element, value, unit = '', precision = 1, naValue = '
          }
     }
 
-    // Add a subtle flash effect on update only if value changed
-    if (valueChanged) {
-        element.classList.remove('updated'); // Remove first to re-trigger animation
-        // Use requestAnimationFrame to ensure class removal is processed before adding it back
+    // Add a subtle flash effect on update only if value changed and element is not the target itself
+    if (valueChanged && !element.classList.contains('updated')) { // Avoid re-triggering if animation is running
+        element.classList.add('updated');
         requestAnimationFrame(() => {
-            element.classList.add('updated');
-            // Remove the class after the animation duration (must match CSS)
-            setTimeout(() => element.classList.remove('updated'), 600); // 600ms matches CSS
+            setTimeout(() => {
+                element.classList.remove('updated');
+            }, 600); // 600ms matches CSS
         });
     }
 }
@@ -329,7 +336,6 @@ function createChart() {
         console.error("Chart context not found");
         return null;
     }
-    // Destroy existing chart instance if it exists
     if (measurementChart) {
         console.log("Destroying existing chart instance.");
         measurementChart.destroy();
@@ -340,22 +346,23 @@ function createChart() {
     return new Chart(El.measurementChartCtx, {
         type: 'line',
         data: {
-            labels: [], // Timestamps (formatted)
+            labels: [], // Formatted Timestamps for display (UTC)
             datasets: [
                 {
                     label: 'Temperature (°C)',
-                    data: [], // Array of numbers
+                    data: [], // Array of {x: epoch_ms, y: value}
                     borderColor: 'var(--gn-chart-temp)',
                     backgroundColor: 'rgba(255, 99, 132, 0.1)',
                     yAxisID: 'yTemp',
-                    tension: 0.2, // Smoother lines
+                    tension: 0.2,
                     pointRadius: 1,
                     pointHoverRadius: 5,
                     borderWidth: 1.5,
+                    parsing: { xAxisKey: 'x', yAxisKey: 'y' }
                 },
                 {
                     label: 'Humidity (%)',
-                    data: [], // Array of numbers
+                    data: [], // Array of {x: epoch_ms, y: value}
                     borderColor: 'var(--gn-chart-humid)',
                     backgroundColor: 'rgba(54, 162, 235, 0.1)',
                     yAxisID: 'yHumid',
@@ -363,18 +370,20 @@ function createChart() {
                     pointRadius: 1,
                     pointHoverRadius: 5,
                     borderWidth: 1.5,
+                     parsing: { xAxisKey: 'x', yAxisKey: 'y' }
                 },
                 {
                     label: 'Pump Activation',
-                    data: [], // Store {x: timestamp_index, y: temperature_at_activation} or just y=null/value
-                    borderColor: 'rgba(0,0,0,0)', // Invisible line
+                    data: [], // Array of {x: epoch_ms, y: temp_value_or_null}
+                    borderColor: 'rgba(0,0,0,0)',
                     backgroundColor: 'var(--gn-chart-pump)',
-                    pointBackgroundColor: 'var(--gn-chart-pump)', // Ensure point color matches
-                    yAxisID: 'yTemp', // Plot against temp axis for context
+                    pointBackgroundColor: 'var(--gn-chart-pump)',
+                    yAxisID: 'yTemp',
                     pointStyle: 'triangle',
                     radius: 6,
                     hoverRadius: 8,
-                    showLine: false, // Just points
+                    showLine: false,
+                     parsing: { xAxisKey: 'x', yAxisKey: 'y' }
                 }
             ]
         },
@@ -383,51 +392,65 @@ function createChart() {
             maintainAspectRatio: false,
             scales: {
                 x: {
-                    // type: 'category', // Use category for simple labels like "1h", "2h"
-                    // If using real timestamps, 'time' type is better with adapter
-                    ticks: {
+                     type: 'category', // Using category axis with formatted labels
+                     ticks: {
                          color: 'var(--gn-chart-text)',
-                         maxRotation: 0, // Prevent label rotation
-                         autoSkip: true, // Automatically skip labels to prevent overlap
-                         maxTicksLimit: 10 // Limit number of visible ticks
+                         maxRotation: 0,
+                         autoSkip: true,
+                         maxTicksLimit: 10,
+                         callback: function(value, index, ticks) {
+                             // 'value' is the index here. Get label from data.labels array
+                             // Show limited labels to avoid clutter
+                             if (index === 0 || index === ticks.length - 1 || index % Math.ceil(ticks.length / 10) === 0) {
+                                  // Use getLabelForValue which reads from chart.data.labels[index]
+                                  return this.getLabelForValue(index);
+                             }
+                             return ''; // Hide intermediate labels
+                         }
                     },
                      grid: { color: 'var(--gn-chart-grid)' }
                 },
                 yTemp: {
-                    type: 'linear',
-                    position: 'left',
+                    type: 'linear', position: 'left',
                     title: { display: true, text: '°C', color: 'var(--gn-chart-temp)' },
-                    ticks: { color: 'var(--gn-chart-temp)', precision: 0 }, // Integer ticks usually suffice
+                    ticks: { color: 'var(--gn-chart-temp)', precision: 0 },
                     grid: { color: 'var(--gn-chart-grid)' }
                 },
                 yHumid: {
-                    type: 'linear',
-                    position: 'right',
+                    type: 'linear', position: 'right',
                     title: { display: true, text: '%', color: 'var(--gn-chart-humid)' },
-                    min: 0,
-                    max: 100, // Humidity is 0-100
+                    min: 0, max: 100,
                     ticks: { color: 'var(--gn-chart-humid)', precision: 0 },
-                    grid: { drawOnChartArea: false } // Avoid overlapping Y grids
+                    grid: { drawOnChartArea: false }
                 }
             },
             plugins: {
                 tooltip: {
-                    mode: 'index',
-                    intersect: false,
-                    backgroundColor: 'rgba(0, 0, 0, 0.8)', // Darker tooltip
-                    titleColor: '#fff',
-                    bodyColor: '#fff',
+                    mode: 'index', intersect: false,
+                    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                    titleColor: '#fff', bodyColor: '#fff',
                     callbacks: {
+                        // Display the formatted UTC timestamp in the tooltip title
+                        title: function(tooltipItems) {
+                            if (tooltipItems.length > 0) {
+                                const item = tooltipItems[0];
+                                // Get the raw epoch_ms value from the parsed data
+                                const epochMs = item.parsed.x;
+                                if (epochMs) {
+                                     // Reuse the UTC formatting function
+                                     return formatTimestampForHistory(epochMs);
+                                }
+                            }
+                            return '';
+                        },
                         label: function(context) {
                             let label = context.dataset.label || '';
-                            if (!measurementChart) return label; // Safety check
+                            if (!measurementChart) return label;
 
                             if (context.dataset.label === 'Pump Activation') {
-                                // Only show label if point is not null (pump was active)
                                 return context.parsed.y !== null ? 'Pump Activated' : null;
                             }
 
-                            // Regular Temp/Humidity labels
                             if (label) label += ': ';
                             if (context.parsed.y !== null) {
                                 label += context.parsed.y.toFixed(1);
@@ -439,28 +462,16 @@ function createChart() {
                     }
                 },
                 legend: {
-                    labels: {
-                        color: 'var(--gn-chart-text)',
-                        usePointStyle: true, // Use point style in legend
-                        padding: 20
-                    },
-                    // Default click behavior is fine (toggle visibility)
+                    labels: { color: 'var(--gn-chart-text)', usePointStyle: true, padding: 20 }
                 }
             },
-            interaction: {
-                 mode: 'nearest',
-                 axis: 'x',
-                 intersect: false
-            },
-             animation: {
-                 duration: 500 // Faster animation on updates
-             }
+            interaction: { mode: 'nearest', axis: 'x', intersect: false },
+             animation: { duration: 500 }
         }
     });
 }
 
 function updateChart(measurements) {
-    // Ensure chart exists
     if (!measurementChart && El.measurementChartCtx) {
         measurementChart = createChart();
     }
@@ -469,184 +480,189 @@ function updateChart(measurements) {
         return;
     }
 
-    // Limit data points
     const limitedMeasurements = measurements.slice(-CHART_MAX_POINTS);
 
-    // Extract data, using null for potential missing values
-    const timestamps = limitedMeasurements.map(m => formatTimestampForHistory(m.epoch_ms)); // Use formatted date/time for labels
-    const humidity = limitedMeasurements.map(m => m.humidity ?? null);
-    const temperature = limitedMeasurements.map(m => m.temperature ?? null);
+    // Use the UTC formatter for the axis labels
+    const chartLabels = limitedMeasurements.map(m => formatTimestampForHistory(m.epoch_ms));
 
-    // Create pump activation data: use temperature value if activated, null otherwise
-    const pumpPointsData = limitedMeasurements.map((m, index) =>
-        m.pumpActivated ? (temperature[index] ?? null) : null // Plot at corresponding temp value
-    );
+    // Prepare data in {x: epoch_ms, y: value} format
+    const tempData = limitedMeasurements.map(m => ({
+        x: m.epoch_ms,
+        y: m.temperature ?? null
+    }));
+    const humidData = limitedMeasurements.map(m => ({
+        x: m.epoch_ms,
+        y: m.humidity ?? null
+    }));
+    const pumpPointsData = limitedMeasurements.map(m => ({
+        x: m.epoch_ms,
+        y: m.pumpActivated ? (m.temperature ?? null) : null
+    }));
 
-    measurementChart.data.labels = timestamps;
-    measurementChart.data.datasets[0].data = temperature;
-    measurementChart.data.datasets[1].data = humidity;
+    measurementChart.data.labels = chartLabels; // Axis display labels (formatted UTC)
+    measurementChart.data.datasets[0].data = tempData;
+    measurementChart.data.datasets[1].data = humidData;
     measurementChart.data.datasets[2].data = pumpPointsData;
 
     measurementChart.update();
 }
 
 
-// Registrar el instante de la medición manual
-El.takeMeasurementBtn?.addEventListener('click', () => {
-    manualTimestampQueue.push(Date.now());
-  });
-  
-  async function updateUI() {
-    console.log("Updating UI...");
+async function updateUI() {
+    console.log("Updating UI (UTC Display Mode)...");
     try {
-      // 0) Asegurarnos de tener currentIntervalValue
-      if (currentIntervalValue === null) {
-        await fetchAndUpdateIntervalDisplay();
-      }
-  
-      // 1) Traer datos core y mediciones
-      const [dataRes, histRes] = await Promise.allSettled([
-        fetchData('/data'),
-        fetchData('/loadMeasurement')
-      ]);
-  
-      // --- Procesar coreData ---
-      if (dataRes.status === 'fulfilled' && dataRes.value) {
-        const coreData = dataRes.value;
-        // Título
-        if (El.pageTitle) El.pageTitle.textContent = `Green Nanny ${coreData.pumpStatus ? '💧' : '🌿'}`;
-        // Widgets básicos
-        updateElementText(El.temp, coreData.temperature, '°C');
-        updateElementText(El.humidity, coreData.humidity, '%');
-        updateElementText(El.vpd, coreData.vpd, ' kPa', 2);
-        updateElementText(El.pumpActivationCount, coreData.pumpActivationCount, '', 0);
-        updateElementText(El.totalElapsedTime, coreData.elapsedTime, '', 0, 'N/A', formatElapsedTime);
-        // Etapa
-        const cs = {
-          name: coreData.currentStageName,
-          threshold: coreData.currentStageThreshold,
-          watering: coreData.currentStageWateringSec,
-          manual: coreData.manualStageControl
-        };
-        updateElementText(El.currentStageLabel, cs.name, '', null, '-');
-        if (El.currentStageParams) El.currentStageParams.textContent = `Threshold: ${cs.threshold}% | Water: ${cs.watering}s`;
-        if (El.manualControlIndicator) El.manualControlIndicator.style.display = cs.manual ? 'inline-block' : 'none';
-        if (El.stageModeIndicator) {
-          El.stageModeIndicator.textContent = cs.manual ? 'Manual' : 'Auto';
-          El.stageModeIndicator.className = `badge ${cs.manual ? 'bg-warning text-dark' : 'bg-info'}`;
+        if (currentIntervalValue === null) {
+            await fetchAndUpdateIntervalDisplay();
         }
-        // Bomba
-        if (El.pumpStatusIndicator) {
-          const on = coreData.pumpStatus ?? false;
-          El.pumpStatusIndicator.textContent = on ? 'ON' : 'OFF';
-          El.pumpStatusIndicator.className = `badge ${on ? 'bg-success' : 'bg-secondary'}`;
-          El.pumpStatusIndicator.classList.toggle('pulsing', on);
-          if (El.activatePumpBtn) El.activatePumpBtn.disabled = on;
-          if (El.deactivatePumpBtn) El.deactivatePumpBtn.disabled = !on;
-        }
-        // WiFi
-        if (El.wifiStatus) {
-          const rssi = coreData.wifiRSSI;
-          if (rssi != null && rssi !== 0) {
-            let icon='fa-wifi text-success', txt=`Connected (${rssi} dBm)`;
-            if (rssi < -80) { icon='fa-wifi text-danger'; txt=`Weak (${rssi} dBm)`; }
-            else if (rssi < -70) { icon='fa-wifi text-warning'; txt=`Okay (${rssi} dBm)`; }
-            El.wifiStatus.innerHTML = `<i class="fas ${icon}"></i> ${txt}`;
-          } else {
-            El.wifiStatus.innerHTML = `<i class="fas fa-wifi text-secondary"></i> Disconnected`;
-          }
-        }
-      } else {
-        console.error('Failed coreData:', dataRes.reason);
-      }
-  
-      // --- Historial de mediciones ---
-      let measurements = [];
-      if (histRes.status === 'fulfilled' && Array.isArray(histRes.value)) {
-        measurements = histRes.value;
-      } else {
-        console.warn('No history:', histRes);
-      }
-  
-      // Si limpiaron el backend, reinicio los arrays
-      if (measurements.length < prevMeasurementCount) {
-        fixedTimestamps = {};
-        manualTimestampQueue = [];
-        prevMeasurementCount = 0;
-      }
-  
-      const now = Date.now();
-      const hours = Number.isFinite(currentIntervalValue) ? currentIntervalValue : 3;
-      const intervalMs = hours * 3600000;
-      const epochThreshold = 1e12;
-  
-      // Fijar timestamps **una sola vez** por cada rawEpochMs
-      measurements.forEach((m, idx) => {
-        const raw = m.epoch_ms;
-        const key = String(raw);
-        if (fixedTimestamps[key] === undefined) {
-          // Si fue manual y coincide con el próximo índice, uso hora real
-          if (idx === prevMeasurementCount && manualTimestampQueue.length) {
-            fixedTimestamps[key] = manualTimestampQueue.shift();
-          } else if (raw > epochThreshold) {
-            // epoch real válido del backend
-            fixedTimestamps[key] = raw;
-          } else {
-            // fallback: repartir según intervalo
-            const posFromEnd = measurements.length - idx - 1;
-            fixedTimestamps[key] = now - posFromEnd * intervalMs;
-          }
-        }
-      });
-  
-      // Persisto en localStorage para que sobreviva al reload
-      localStorage.setItem('fixedTimestamps', JSON.stringify(fixedTimestamps));
-  
-      // Construyo array de timestamps de display en orden
-      const displayTimestamps = measurements.map(m => fixedTimestamps[String(m.epoch_ms)]);
-  
-      // Renderizo historial
-      if (El.measurementHistory) {
-        const start = Math.max(0, measurements.length - HISTORY_MAX_ENTRIES);
-        const sliceMeas = measurements.slice(start).reverse();
-        const sliceTimes = displayTimestamps.slice(start).reverse();
-        const html = sliceMeas.map((m, i) => {
-          const ts = sliceTimes[i];
-          return `
-            <div class="measurement-history-entry">
-              <span class="timestamp">${new Date(ts).toLocaleString()}</span>
-              <span class="data-point"><i class="fas fa-thermometer-half"></i>${m.temperature?.toFixed(1)}°C</span>
-              <span class="data-point"><i class="fas fa-tint"></i>${m.humidity?.toFixed(1)}%</span>
-              ${m.pumpActivated ? '<span class="data-point pump-info"><i class="fas fa-play"></i>Pump</span>' : ''}
-            </div>
-          `;
-        }).join('') || `<div class="measurement-history-entry text-muted">No history recorded.</div>`;
-  
-        El.measurementHistory.innerHTML = html;
-        El.measurementHistory.scrollTop = El.measurementHistory.scrollHeight;
-      }
-  
-      // Actualizar “última medición” solo si hay nuevas
-      if (measurements.length > prevMeasurementCount) {
-        const lastTs = displayTimestamps[displayTimestamps.length - 1];
-        if (El.lastMeasurementTime) {
-          El.lastMeasurementTime.textContent = new Date(lastTs).toLocaleString();
-        }
-        prevMeasurementCount = measurements.length;
-      }
-  
-      // --- Gráfico ---
-      updateChart(measurements);
-  
-    } catch (err) {
-      console.error('Error en updateUI:', err);
-    } finally {
-      clearTimeout(refreshTimeoutId);
-      refreshTimeoutId = setTimeout(updateUI, REFRESH_INTERVAL);
-    }
-  }
 
-// Function to fetch and update the displayed interval
+        const [dataRes, histRes] = await Promise.allSettled([
+            fetchData('/data'),
+            fetchData('/loadMeasurement')
+        ]);
+
+        // --- Process coreData ---
+        if (dataRes.status === 'fulfilled' && dataRes.value) {
+            const coreData = dataRes.value;
+            // Update basic widgets
+            if (El.pageTitle) El.pageTitle.textContent = `Green Nanny ${coreData.pumpStatus ? '💧' : '🌿'}`;
+            updateElementText(El.temp, coreData.temperature, '°C');
+            updateElementText(El.humidity, coreData.humidity, '%');
+            updateElementText(El.vpd, coreData.vpd, ' kPa', 2);
+            updateElementText(El.pumpActivationCount, coreData.pumpActivationCount, '', 0);
+            updateElementText(El.totalElapsedTime, coreData.elapsedTime, '', 0, 'N/A', formatElapsedTime);
+
+            // Update Last Measurement Time using reliable timestamp, FORMATTING IN UTC
+            updateElementText(
+                El.lastMeasurementTime,
+                coreData.lastMeasurementTimestamp, // epoch_ms from backend
+                '', 0, '-',
+                ts => {
+                    if (!ts || ts <= 0) return '-';
+                    const d = new Date(ts);
+                    // Format using Intl.DateTimeFormat for robust UTC display
+                    const options = {
+                        year: 'numeric', month: 'short', day: 'numeric',
+                        hour: '2-digit', minute: '2-digit', second: '2-digit',
+                        hour12: false, // Use 24h format
+                        timeZone: 'UTC' // Specify UTC timezone
+                    };
+                    try {
+                        // 'en-GB' or similar locale often gives DD/MM/YYYY HH:MM:SS
+                        // 'undefined' uses browser default locale but forces UTC
+                        return new Intl.DateTimeFormat(undefined, options).format(d) + ' UTC';
+                    } catch (e) {
+                         // Fallback simple UTC string if Intl fails
+                         console.warn("Intl.DateTimeFormat failed, using toUTCString fallback.", e);
+                         return d.toUTCString();
+                    }
+                }
+            );
+
+            // Update Stage info
+            const cs = {
+              name: coreData.currentStageName,
+              threshold: coreData.currentStageThreshold,
+              watering: coreData.currentStageWateringSec,
+              manual: coreData.manualStageControl
+            };
+            currentStageData = {
+                index: coreData.currentStageIndex,
+                name: cs.name,
+                manual: cs.manual
+            };
+            updateElementText(El.currentStageLabel, cs.name, '', null, '-');
+            if (El.currentStageParams) El.currentStageParams.textContent = `Threshold: ${cs.threshold}% | Water: ${cs.watering}s`;
+            if (El.manualControlIndicator) El.manualControlIndicator.style.display = cs.manual ? 'inline-block' : 'none';
+            if (El.stageModeIndicator) {
+              El.stageModeIndicator.textContent = cs.manual ? 'Manual' : 'Auto';
+              El.stageModeIndicator.className = `badge ${cs.manual ? 'bg-warning text-dark' : 'bg-info'}`;
+            }
+
+            // Update Pump status
+            if (El.pumpStatusIndicator) {
+              const on = coreData.pumpStatus ?? false;
+              El.pumpStatusIndicator.textContent = on ? 'ON' : 'OFF';
+              El.pumpStatusIndicator.className = `badge ${on ? 'bg-success' : 'bg-secondary'}`;
+              El.pumpStatusIndicator.classList.toggle('pulsing', on);
+              if (El.activatePumpBtn) El.activatePumpBtn.disabled = on;
+              if (El.deactivatePumpBtn) El.deactivatePumpBtn.disabled = !on;
+            }
+
+            // Update WiFi status
+            if (El.wifiStatus) {
+              const rssi = coreData.wifiRSSI;
+              if (rssi != null && rssi !== 0) {
+                let icon='fa-wifi text-success', txt=`Connected (${rssi} dBm)`;
+                if (rssi < -80) { icon='fa-wifi text-danger'; txt=`Weak (${rssi} dBm)`; }
+                else if (rssi < -70) { icon='fa-wifi text-warning'; txt=`Okay (${rssi} dBm)`; }
+                El.wifiStatus.innerHTML = `<i class="fas ${icon}"></i> ${txt}`;
+              } else {
+                El.wifiStatus.innerHTML = `<i class="fas fa-wifi text-secondary"></i> Disconnected`;
+              }
+            }
+             // Update Device IP in footer
+            if (El.deviceIP) {
+                 updateElementText(El.deviceIP, coreData.deviceIP || window.location.hostname, '', null, '-');
+            }
+
+        } else {
+            console.error('Failed to fetch core data:', dataRes.reason || 'Unknown error');
+            showToast('Error fetching core device data!', 'error', 10000);
+        }
+
+        // --- Measurement History ---
+        let measurements = [];
+        if (histRes.status === 'fulfilled' && Array.isArray(histRes.value)) {
+            measurements = histRes.value;
+        } else {
+            console.warn('Failed to fetch or parse measurement history:', histRes.reason || 'Empty response');
+             if (El.measurementHistory) {
+                 El.measurementHistory.innerHTML = `<div class="measurement-history-entry text-muted">Could not load history.</div>`;
+             }
+        }
+
+        // --- Render History Log (using UTC timestamps) ---
+        if (El.measurementHistory) {
+            const start = Math.max(0, measurements.length - HISTORY_MAX_ENTRIES);
+            const recentMeasurements = measurements.slice(start).reverse(); // Most recent first
+
+            const html = recentMeasurements.map(m => {
+                const ts = m.epoch_ms;
+                // Use the UTC formatter for history display
+                const displayTime = formatTimestampForHistory(ts);
+
+                const tempText = m.temperature != null ? `${m.temperature.toFixed(1)}°C` : 'N/A';
+                const humidText = m.humidity != null ? `${m.humidity.toFixed(1)}%` : 'N/A';
+
+                return `
+                    <div class="measurement-history-entry">
+                        <span class="timestamp">${displayTime}</span>
+                        <span class="data-point"><i class="fas fa-thermometer-half"></i>${tempText}</span>
+                        <span class="data-point"><i class="fas fa-tint"></i>${humidText}</span>
+                        ${m.pumpActivated ? '<span class="data-point pump-info"><i class="fas fa-play"></i>Pump</span>' : ''}
+                        ${m.stage ? `<span class="data-point stage-info"><i class="fas fa-seedling"></i>${m.stage}</span>` : ''}
+                    </div>
+                `;
+            }).join('') || `<div class="measurement-history-entry text-muted">No history recorded.</div>`;
+
+            El.measurementHistory.innerHTML = html;
+             El.measurementHistory.scrollTop = El.measurementHistory.scrollHeight; // Keep scrolling to bottom (newest = bottom)
+        }
+
+        // --- Update Chart ---
+        updateChart(measurements);
+
+    } catch (err) {
+        console.error('Error during UI update cycle:', err);
+        showToast(`UI Update failed: ${err.message}`, 'error');
+    } finally {
+        clearTimeout(refreshTimeoutId);
+        refreshTimeoutId = setTimeout(updateUI, REFRESH_INTERVAL);
+    }
+}
+
+
+// Function to fetch and update the displayed interval (no change needed)
 async function fetchAndUpdateIntervalDisplay() {
      if (!El.currentInterval || !El.intervalInput) return;
      try {
@@ -654,7 +670,7 @@ async function fetchAndUpdateIntervalDisplay() {
         if (intervalData && intervalData.interval != null) {
              currentIntervalValue = intervalData.interval;
              El.currentInterval.textContent = currentIntervalValue;
-             El.intervalInput.value = currentIntervalValue; // Pre-fill input
+             El.intervalInput.value = currentIntervalValue;
              El.intervalInput.placeholder = `Current: ${currentIntervalValue}h`;
         }
      } catch (error) {
@@ -663,8 +679,7 @@ async function fetchAndUpdateIntervalDisplay() {
      }
 }
 
-
-// Function to populate stage selector
+// Function to populate stage selector (no change needed)
 async function populateStageSelector() {
     if (!El.manualStageSelect) return;
     El.manualStageSelect.innerHTML = `<option value="" disabled selected>Loading stages...</option>`;
@@ -674,7 +689,6 @@ async function populateStageSelector() {
             El.manualStageSelect.innerHTML = stages.map(stage =>
                 `<option value="${stage.index}">${stage.name} (T:${stage.humidityThreshold}% W:${stage.wateringTimeSec}s)</option>`
             ).join('');
-            // Select the currently active stage if available
             if (currentStageData && currentStageData.index != null) {
                  El.manualStageSelect.value = currentStageData.index;
             }
@@ -691,15 +705,14 @@ async function populateStageSelector() {
 // --- Event Listener Setup ---
 function setupEventListeners() {
 
-    // --- Forms ---
+    // --- Forms --- (No changes needed in form logic)
     El.intervalForm?.addEventListener('submit', async (e) => {
         e.preventDefault();
         const value = El.intervalInput?.value;
         const numValue = parseInt(value);
         if (value === '' || isNaN(numValue) || numValue < 1 || numValue > 167) {
              showToast('Please enter a valid interval (1-167 hours).', 'warning');
-             El.intervalInput?.classList.add('is-invalid');
-             return;
+             El.intervalInput?.classList.add('is-invalid'); return;
         }
          El.intervalInput?.classList.remove('is-invalid');
         const button = El.intervalForm.querySelector('button[type="submit"]');
@@ -707,36 +720,24 @@ function setupEventListeners() {
         try {
             await postData('/setMeasurementInterval', { interval: numValue });
             showToast(`Measurement interval set to ${numValue} hours`, 'success');
-            currentIntervalValue = numValue; // Update local state
+            currentIntervalValue = numValue;
              if(El.currentInterval) El.currentInterval.textContent = currentIntervalValue;
              El.intervalInput.placeholder = `Current: ${currentIntervalValue}h`;
-            // Optionally trigger UI refresh to reflect potential scheduling changes
-             // await updateUI();
-        } catch (error) {
-             // Error logged by postData
-        } finally {
-            setLoadingState(button, false);
-        }
+        } catch (error) { /* Handled by postData */ }
+        finally { setLoadingState(button, false); }
     });
 
      El.intervalInput?.addEventListener('input', () => {
-          const value = El.intervalInput.value;
-          const numValue = parseInt(value);
-         if (value === '' || isNaN(numValue) || numValue < 1 || numValue > 167) {
-             El.intervalInput.classList.add('is-invalid');
-         } else {
-             El.intervalInput.classList.remove('is-invalid');
-         }
+          const value = El.intervalInput.value; const numValue = parseInt(value);
+         El.intervalInput.classList.toggle('is-invalid', value === '' || isNaN(numValue) || numValue < 1 || numValue > 167);
      });
 
     El.manualStageForm?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const value = El.manualStageSelect?.value;
-        const numValue = parseInt(value);
+        const value = El.manualStageSelect?.value; const numValue = parseInt(value);
         if (value === '' || isNaN(numValue)) {
             showToast('Please select a valid stage.', 'warning');
-             El.manualStageSelect?.classList.add('is-invalid');
-            return;
+             El.manualStageSelect?.classList.add('is-invalid'); return;
         }
          El.manualStageSelect?.classList.remove('is-invalid');
         const button = El.manualStageForm.querySelector('button[type="submit"]');
@@ -744,64 +745,35 @@ function setupEventListeners() {
         try {
             await postData('/setManualStage', { stage: numValue });
             showToast(`Manual stage set to "${El.manualStageSelect.options[El.manualStageSelect.selectedIndex].text.split('(')[0].trim()}"`, 'success');
-            // Refresh UI immediately to show the change
-            await updateUI();
-            // Ensure selector reflects the change if updateUI didn't catch it fast enough
-             // Maybe update currentStageData directly?
-             if (currentStageData) currentStageData.manual = true;
-             if (El.manualControlIndicator) El.manualControlIndicator.style.display = 'inline-block';
-             if (El.stageModeIndicator) {
-                 El.stageModeIndicator.textContent = 'Manual';
-                 El.stageModeIndicator.className = 'badge bg-warning text-dark';
-             }
-
-        } catch (error) {
-            // Error logged by postData
-        } finally {
-            setLoadingState(button, false);
-        }
+            await updateUI(); // Refresh UI to show change
+        } catch (error) { /* Handled by postData */ }
+        finally { setLoadingState(button, false); }
     });
 
-    // --- Buttons ---
+    // --- Buttons --- (No changes needed in button action logic)
     El.activatePumpBtn?.addEventListener('click', async () => {
-        // Consider replacing prompt with a modal or inline input for duration
         const durationStr = prompt('Enter pump activation duration in seconds (e.g., 30):', '30');
-        if (durationStr === null) return; // User cancelled
+        if (durationStr === null) return;
         const duration = parseInt(durationStr);
-
         if (isNaN(duration) || duration <= 0) {
-            showToast('Invalid duration. Please enter a positive number of seconds.', 'warning');
-            return;
+            showToast('Invalid duration. Please enter a positive number of seconds.', 'warning'); return;
         }
-
         setLoadingState(El.activatePumpBtn, true);
         try {
-            const response = await postData('/controlPump', { action: 'on', duration: duration });
-            // Check response? Assume success if no error thrown by postData
+            await postData('/controlPump', { action: 'on', duration: duration });
             showToast(`Pump activated manually for ${duration} seconds.`, 'success');
-             await updateUI(); // Refresh UI to show pump status
-        } catch (error) {
-             // Error handled by postData
-        } finally {
-            // The updateUI call should handle button state, but ensure it's re-enabled if needed
-             // setLoadingState(El.activatePumpBtn, false); // Re-enable after updateUI potentially
-        }
+             await updateUI();
+        } catch (error) { await updateUI(); } // Refresh even on error
     });
 
     El.deactivatePumpBtn?.addEventListener('click', async () => {
-        // Confirmation is good practice for stopping something potentially needed
-        if (!confirm('Are you sure you want to manually deactivate the pump?\nThis will stop the current watering cycle if active.')) return;
-
+        if (!confirm('Are you sure you want to manually deactivate the pump?')) return;
         setLoadingState(El.deactivatePumpBtn, true);
         try {
             await postData('/controlPump', { action: 'off' });
             showToast('Pump deactivated manually.', 'success');
-             await updateUI(); // Refresh UI
-        } catch (error) {
-             // Error handled by postData
-        } finally {
-             // setLoadingState(El.deactivatePumpBtn, false); // updateUI should handle this
-        }
+             await updateUI();
+        } catch (error) { await updateUI(); } // Refresh even on error
     });
 
     El.takeMeasurementBtn?.addEventListener('click', async () => {
@@ -809,154 +781,113 @@ function setupEventListeners() {
         showToast('Triggering manual measurement cycle...', 'info', 2000);
         try {
             await postData('/takeMeasurement', {}, 'POST');
-            // Give device a moment to process and save before fetching new data
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            await updateUI(); // Refresh UI immediately
+            await new Promise(resolve => setTimeout(resolve, 1500)); // Wait for device
+            await updateUI(); // Refresh UI with new measurement
             showToast('Measurement cycle complete.', 'success', 2000);
-        } catch (error) {
-             // Error toast shown by postData
-             // Optionally show a specific failure toast here
-             // showToast('Failed to trigger measurement cycle.', 'error');
-        } finally {
-            setLoadingState(El.takeMeasurementBtn, false);
-        }
+        } catch (error) { /* Handled by postData */ }
+        finally { setLoadingState(El.takeMeasurementBtn, false); }
     });
 
     El.clearMeasurementsBtn?.addEventListener('click', async () => {
         if (!confirm('⚠️ DELETE ALL MEASUREMENT HISTORY? ⚠️\n\nThis action cannot be undone.')) return;
-
         setLoadingState(El.clearMeasurementsBtn, true);
         try {
             await postData('/clearHistory', {}, 'POST');
             showToast('Measurement history cleared successfully.', 'success');
-            // Clear chart data immediately
             if(measurementChart) {
                  measurementChart.data.labels = [];
                  measurementChart.data.datasets.forEach(ds => ds.data = []);
-                 measurementChart.update('none'); // Update without animation
+                 measurementChart.update('none');
             }
-            // Clear history log display immediately
             if(El.measurementHistory) El.measurementHistory.innerHTML = `<div class='measurement-history-entry text-muted'>History cleared.</div>`;
-            // Trigger full UI update to fetch potentially empty history from backend
-            await updateUI();
-        } catch (error) {
-            // Error toast shown by postData
-        } finally {
-            setLoadingState(El.clearMeasurementsBtn, false);
-        }
+            await updateUI(); // Fetch empty history
+        } catch (error) { /* Handled by postData */ }
+        finally { setLoadingState(El.clearMeasurementsBtn, false); }
     });
 
     El.restartSystemBtn?.addEventListener('click', async () => {
-        if (!confirm('Are you sure you want to restart the Green Nanny device?\n\nThe dashboard will become unresponsive for a short time.')) return;
-
+        if (!confirm('Are you sure you want to restart the Green Nanny device?\n\nThe dashboard will become unresponsive.')) return;
         setLoadingState(El.restartSystemBtn, true);
         showToast('Sending restart command...', 'warning');
-        document.body.classList.add('system-restarting'); // Show overlay
-
+        document.body.classList.add('system-restarting');
         try {
-            // Don't necessarily wait for response, as device might disconnect immediately
-             postData('/restartSystem', {}, 'POST');
-             // Inform user, they need to refresh manually later
+             postData('/restartSystem', {}, 'POST'); // Fire and forget
              setTimeout(() => {
-                 alert('System restart command sent. The device is now restarting.\n\nPlease wait about 30 seconds and then manually refresh this page.');
-                 // Maybe disable all controls permanently until refresh?
+                 alert('System restart command sent.\nPlease wait ~30 seconds and manually refresh this page.');
                  document.querySelectorAll('button, input, select').forEach(el => el.disabled = true);
-             }, 2000); // Wait 2s before alert
+             }, 2000);
         } catch (error) {
-             // This might happen if the fetch fails before server goes down
-            showToast('Failed to send restart command. You may need to restart manually.', 'error');
+            showToast('Failed to send restart command. Restart manually.', 'error');
             setLoadingState(El.restartSystemBtn, false);
              document.body.classList.remove('system-restarting');
         }
-        // No 'finally' block to reset button, as the page context will be lost/needs refresh
     });
 
     El.refreshStageBtn?.addEventListener('click', async () => {
          setLoadingState(El.refreshStageBtn, true);
          try {
-             // Re-fetch core data which includes stage info
              await updateUI();
-             // Refetch stage list to update selector options? Not strictly necessary unless stages change.
-             // await populateStageSelector();
-              showToast('Stage information refreshed.', 'info', 2000);
-         } catch (error) {
-              // Error handled by updateUI
-         } finally {
-             setLoadingState(El.refreshStageBtn, false);
-         }
+             showToast('Stage information refreshed.', 'info', 2000);
+         } catch (error) { /* Handled by updateUI */ }
+         finally { setLoadingState(El.refreshStageBtn, false); }
     });
 
     El.resetManualStageBtn?.addEventListener('click', async () => {
-        if (!confirm('Return to automatic stage progression based on system uptime?')) return;
+        if (!confirm('Return to automatic stage progression?')) return;
         setLoadingState(El.resetManualStageBtn, true);
         try {
             await postData('/resetManualStage', {}, 'POST');
             showToast('Stage control reset to automatic.', 'success');
-            // Refresh UI immediately
-            await updateUI();
-             // Update local state and indicators
-             if (currentStageData) currentStageData.manual = false;
-             if (El.manualControlIndicator) El.manualControlIndicator.style.display = 'none';
-             if (El.stageModeIndicator) {
-                 El.stageModeIndicator.textContent = 'Auto';
-                 El.stageModeIndicator.className = 'badge bg-info';
-             }
-        } catch (error) {
-             // Error handled by postData
-        } finally {
-            setLoadingState(El.resetManualStageBtn, false);
-        }
+            await updateUI(); // Refresh UI
+        } catch (error) { /* Handled by postData */ }
+        finally { setLoadingState(El.resetManualStageBtn, false); }
     });
 
-    // --- Initialize Tooltips ---
+    // --- Initialize Tooltips --- (no change needed)
     if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
         const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
         tooltipTriggerList.map(function (tooltipTriggerEl) {
-            return new bootstrap.Tooltip(tooltipTriggerEl, {
-                trigger: 'hover focus' // Show on hover and focus for accessibility
-            });
+            return new bootstrap.Tooltip(tooltipTriggerEl, { trigger: 'hover focus' });
         });
     } else {
-        console.warn("Bootstrap Tooltip component not found. Tooltips will not work.");
+        console.warn("Bootstrap Tooltip component not found.");
     }
 }
 
 
 // --- Initialization ---
 document.addEventListener('DOMContentLoaded', async () => {
-    console.log("DOM loaded. Initializing Green Nanny Dashboard...");
+    console.log("DOM loaded. Initializing Green Nanny Dashboard (UTC Display Mode)...");
     showGlobalLoader(true);
 
-    // Ensure chart context exists before proceeding
     if (!El.measurementChartCtx) {
          console.warn("Chart canvas context not found. Chart will be disabled.");
-         // Optionally disable chart-related UI elements
     }
 
     setupEventListeners(); // Setup listeners first
 
     try {
-        // Fetch initial data and populate UI
-        await updateUI(); // Includes fetching data, populating elements, and creating/updating chart
+        // Initial UI population: fetches data, history, updates chart/log
+        await updateUI();
 
-        // Populate stage selector after initial data load (might have current stage info)
+        // Populate stage selector based on current state fetched by updateUI
         await populateStageSelector();
 
         // Fetch and display initial interval
         await fetchAndUpdateIntervalDisplay();
 
-
         console.log("Initialization complete.");
 
     } catch (error) {
         console.error("Dashboard initialization failed:", error);
-        showToast("Failed to load initial dashboard data. Please check device connection and refresh.", "error", 10000);
-        // Display a more prominent error message?
+        showToast("Failed to load initial dashboard data. Check device connection and refresh.", "error", 10000);
         const mainContent = document.querySelector('.content-wrapper');
         if(mainContent) {
              mainContent.insertAdjacentHTML('afterbegin', `<div class="alert alert-danger m-3"><strong>Initialization Error:</strong> Could not load initial data. Check device connection and refresh.</div>`);
         }
     } finally {
          showGlobalLoader(false);
+         // Auto-refresh is started by the first updateUI call's finally block
     }
 });
+// --- END OF FILE app.js ---

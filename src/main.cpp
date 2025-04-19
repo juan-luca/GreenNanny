@@ -4,6 +4,9 @@
 #include <DHT.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include <Wire.h>
+#include <RTClib.h>
+
 
 // Definiciones de pines y tipos
 #define DHTPIN D2
@@ -12,6 +15,8 @@
 
 #define MAX_JSON_OBJECTS 500 // Max measurements to store
 
+// RTC
+RTC_DS1307 rtc;
 // Configuración de DNS y Captive Portal
 DNSServer dnsServer;
 const byte DNS_PORT = 53;
@@ -24,7 +29,7 @@ String measurements[MAX_JSON_OBJECTS];
 int jsonIndex = 0;
 
 // Configuración de red estática (si se usan credenciales guardadas)
-IPAddress ip(192, 168, 0, 79);
+IPAddress ip(192, 168, 0, 75);
 IPAddress gateway(192, 168, 0, 1);
 IPAddress subnet(255, 255, 255, 0);
 
@@ -74,7 +79,7 @@ const int numStages = sizeof(stages) / sizeof(stages[0]);
 // Variables para control manual de etapas
 bool manualStageControl = false;
 int manualStageIndex = 0; // Index in the stages array
-
+uint32_t rtcBootEpoch = 0;
 // Variables de estado
 unsigned long lastMeasurementTimestamp = 0; // Track last successful measurement time
 
@@ -153,6 +158,27 @@ void setup() {
           }
         #endif
     }
+// Iniciar I2C y RTC
+Wire.begin(D6 /* SDA */, D5 /* SCL */);
+if (!rtc.begin()) {
+    Serial.println("[ERROR] No se encontró el módulo RTC DS1307.");
+} else {
+    if (!rtc.isrunning()) {
+        Serial.println("[WARN] RTC no está corriendo, ajustando con fecha/hora de compilación.");
+        rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    }
+    Serial.println("[INFO] Módulo RTC DS1307 inicializado correctamente.");
+}
+DateTime now = rtc.now();
+char buf[20];
+// Formato YYYY-MM-DD HH:MM:SS
+sprintf(buf, "%04u-%02u-%02u %02u:%02u:%02u",
+        now.year(), now.month(), now.day(),
+        now.hour(), now.minute(), now.second());
+Serial.println(buf);
+
+rtcBootEpoch = rtc.now().unixtime();   // ← guardo epoch en segundos
+startTime    = millis();              // mantengo tu millisecond counter para timers
 
     // Configurar el pin de la bomba
     setupBomba();
@@ -733,7 +759,9 @@ void controlIndependiente() {
     unsigned long elapsedMillis = now - startTime;
     unsigned long elapsedSeconds = elapsedMillis / 1000;
     unsigned long elapsedHours   = elapsedSeconds / 3600;
-    unsigned long elapsedDays    = elapsedSeconds / 86400;
+    uint32_t elapsedDays = (rtc.now().unixtime() - rtcBootEpoch) / 86400UL;
+
+
 
     static unsigned long failureStartTime = 0; // Timestamp de primer fallo
 
@@ -742,10 +770,12 @@ void controlIndependiente() {
     Serial.print(elapsedHours % 24); Serial.print("h ");
     Serial.print((elapsedSeconds % 3600) / 60); Serial.println("m");
 
-    // 1. Tomar lecturas (real o simulada)
-    float humidity    = getHumidity();
+    // 1. Tomar lecturas
+    DateTime dtNow   = rtc.now();
+    uint64_t epochMs = (uint64_t)dtNow.unixtime() * 1000ULL;
+    float humidity   = getHumidity();
     float temperature = getTemperature();
-    lastMeasurementTimestamp = now;
+    lastMeasurementTimestamp = epochMs;   // <-- AHORA ES EPOCH REAL
 
     // 2. Detectar fallo de sensor
     bool sensorValid = !(humidity < 0.0 || temperature <= -90.0);
@@ -817,7 +847,10 @@ doc["humidity"]    = humidity;     // a float → JSON number
 doc["timestamp"]    = String(elapsedHours) + "h" + String((elapsedSeconds % 3600) / 60) + "m";
 doc["pumpActivated"] = needsWatering;
 doc["stage"]         = currentStage.name;
-doc["epoch_ms"]      = now;
+doc["epoch_ms"]      = epochMs;     // número, no string
+doc["timestamp_str"] = dtNow.timestamp(DateTime::TIMESTAMP_DATE) + String(" ") +
+                       dtNow.timestamp(DateTime::TIMESTAMP_TIME);   // legible
+
 
 // Serializar y guardar
 String measurementString;
@@ -881,7 +914,9 @@ void handleData() {
     int stageIndex = getCurrentStageIndex(elapsedDays);
     const Stage& currentStage = stages[stageIndex];
 
-
+    DateTime dtNow = rtc.now();
+    uint64_t epochNowMs = (uint64_t)dtNow.unixtime() * 1000ULL;
+   
     // Crear respuesta JSON
     StaticJsonDocument<512> doc; // Sufficient size for data payload
     doc["temperature"] = serialized(String(temperature, 1));
@@ -891,7 +926,8 @@ void handleData() {
     doc["pumpActivationCount"] = pumpActivationCount;
     doc["elapsedTime"] = elapsedSeconds; // Total seconds elapsed
     doc["startTime"] = startTime; // System start time in ms
-    doc["lastMeasurementTimestamp"] = lastMeasurementTimestamp; // Last measurement time in ms
+    doc["currentTime"]           = epochNowMs;
+    doc["lastMeasurementTimestamp"] = lastMeasurementTimestamp; // ya contiene epoch real
     // Current stage info
     doc["currentStageName"] = currentStage.name;
     doc["currentStageIndex"] = stageIndex;
