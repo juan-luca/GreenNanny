@@ -1,5 +1,3 @@
-// --- START OF FILE main.cpp ---
-
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <DNSServer.h>
@@ -16,6 +14,7 @@
 #define BOMBA_PIN D3
 
 #define MAX_JSON_OBJECTS 500 // Max measurements to store
+#define STAGES_CONFIG_FILE "/stages_config.json" // File for custom stage config
 
 // RTC
 RTC_DS1307 rtc;
@@ -31,7 +30,7 @@ String measurements[MAX_JSON_OBJECTS];
 int jsonIndex = 0;
 
 // Configuración de red estática (opcional)
-IPAddress ip(192, 168, 0, 79);
+IPAddress ip(192, 168, 0, 73);
 IPAddress gateway(192, 168, 0, 1);
 IPAddress subnet(255, 255, 255, 0);
 
@@ -60,20 +59,20 @@ int pumpSecondsCount = 0;          // Counter for debug seconds
 int measurementInterval = 3; // Default 3 hours
 unsigned long nextMeasureTimestamp = 0; // Timestamp for next measurement check
 
-// Definición de etapas fenológicas
+// Definición de etapas fenológicas - REMOVE CONST HERE
 struct Stage {
-    const char* name;
-    int duration_days;     // Approx. days the stage lasts
-    int humidityThreshold; // Minimum humidity threshold (%) for this stage
-    int wateringTimeSec;   // Default watering time in seconds for this stage
+    const char* name;      // Keep name const
+    int duration_days;     // Can be modified if desired, but not requested yet. Keep as is for now.
+    int humidityThreshold; // EDITABLE
+    int wateringTimeSec;   // EDITABLE
 };
 
-// Array de Etapas
+// Array de Etapas - REMOVE CONST, this is now the default/initial config
 Stage stages[] = {
-    {"Germinacion", 7, 65, 15},   // Higher humidity needed initially
+    {"Germinacion", 7, 65, 15},
     {"Vegetativo", 14, 60, 25},
     {"Prefloracion", 7, 55, 35},
-    {"Floracion", 30, 50, 35},    // Lower humidity often preferred
+    {"Floracion", 30, 50, 35},
     {"Maduracion", 10, 45, 20}
 };
 const int numStages = sizeof(stages) / sizeof(stages[0]);
@@ -114,7 +113,10 @@ void saveManualStage(int index);
 void handleSetManualStage();
 void handleGetCurrentStage();
 void handleResetManualStage();
-void handleListStages();
+void handleListStages(); // Now returns current/modified stages
+void loadStagesConfig(); // NEW: Load custom stage config from file
+bool saveStagesConfig(); // NEW: Save current stages to file
+void handleUpdateStage(); // NEW: API endpoint to update a stage
 // Data Handling
 String loadMeasurements();
 void saveMeasurement(const String& jsonString);
@@ -163,7 +165,6 @@ void setup() {
     Wire.begin(D6 /* SDA */, D5 /* SCL */);
     if (!rtc.begin()) {
         Serial.println("[ERROR] No se encontró el módulo RTC DS1307.");
-        // Consider fallback or halt? For now, continue without RTC if needed.
     } else {
         if (!rtc.isrunning()) {
             Serial.println("[WARN] RTC no está corriendo, ajustando con fecha/hora de compilación.");
@@ -178,12 +179,9 @@ void setup() {
 
     rtcBootEpoch = rtc.now().unixtime();   // Store boot time epoch
     startTime    = millis();               // Store boot time millis
-
-    // Initialize last measurement time with boot time epoch
-    lastMeasurementTimestamp = (uint64_t)rtcBootEpoch * 1000ULL;
+    lastMeasurementTimestamp = (uint64_t)rtcBootEpoch * 1000ULL; // Initialize last measurement time
     Serial.print("[INFO] Hora de inicio del sistema (millis): "); Serial.println(startTime);
     Serial.print("[INFO] Hora de inicio del sistema (epoch ms): "); Serial.println((uint64_t)lastMeasurementTimestamp);
-
 
     // Configurar el pin de la bomba
     setupBomba();
@@ -191,14 +189,16 @@ void setup() {
     // Inicializar el sensor DHT
     setupDHTSensor();
 
+    // ***** NEW: Load custom stage configuration *****
+    loadStagesConfig();
+
     // Cargar mediciones previas
     jsonIndex = parseData(loadMeasurements(), measurements);
     Serial.print("[INFO] Cargadas "); Serial.print(jsonIndex); Serial.println(" mediciones previas.");
 
     // Cargar intervalo de medición
     loadMeasurementInterval();
-    // Calcular la primera hora de medición programada
-    nextMeasureTimestamp = startTime + (measurementInterval * 3600000UL); // First measure after interval from start
+    nextMeasureTimestamp = startTime + (measurementInterval * 3600000UL);
     Serial.print("[INFO] Próxima medición programada inicialmente alrededor de millis: "); Serial.println(nextMeasureTimestamp);
 
     // Cargar etapa manual si existe
@@ -381,6 +381,7 @@ float calculateVPD(float temperature, float humidity) {
 int getCurrentStageIndex(unsigned long daysElapsed) {
     if (manualStageControl) return manualStageIndex;
     unsigned long cumulativeDays = 0;
+    // Uses the potentially modified 'stages' array
     for (int i = 0; i < numStages; i++) {
         cumulativeDays += stages[i].duration_days;
         if (daysElapsed <= cumulativeDays) return i;
@@ -647,6 +648,130 @@ void formatMeasurementsToString(String& formattedString) {
     formattedString += "]";
 }
 
+
+// NEW: Load custom stage configuration from LittleFS
+void loadStagesConfig() {
+    Serial.print("[SETUP] Intentando cargar configuración de etapas desde "); Serial.println(STAGES_CONFIG_FILE);
+    if (!LittleFS.exists(STAGES_CONFIG_FILE)) {
+        Serial.println("[INFO] No existe archivo de configuración de etapas. Usando defaults.");
+        return;
+    }
+
+    File configFile = LittleFS.open(STAGES_CONFIG_FILE, "r");
+    if (!configFile) {
+        Serial.println("[ERROR] No se pudo abrir el archivo de configuración de etapas para lectura.");
+        return;
+    }
+
+    // Increase size if necessary, depends on stage names and number of stages
+    StaticJsonDocument<1024> doc; // Adjust size as needed
+    DeserializationError error = deserializeJson(doc, configFile);
+    configFile.close();
+
+    if (error) {
+        Serial.print(F("[ERROR] Falló al deserializar stages_config.json: "));
+        Serial.println(error.f_str());
+        Serial.println("[WARN] Usando configuración de etapas default.");
+        // Optional: Delete corrupted file?
+        // LittleFS.remove(STAGES_CONFIG_FILE);
+        return;
+    }
+
+    if (!doc.is<JsonArray>()) {
+        Serial.println("[ERROR] stages_config.json no contiene un array JSON. Usando defaults.");
+        return;
+    }
+
+    JsonArray loadedStages = doc.as<JsonArray>();
+    if (loadedStages.size() != numStages) {
+         Serial.print("[WARN] El número de etapas en config (");
+         Serial.print(loadedStages.size());
+         Serial.print(") no coincide con el default (");
+         Serial.print(numStages);
+         Serial.println("). Usando defaults.");
+         // Optional: Delete mismatched file?
+         // LittleFS.remove(STAGES_CONFIG_FILE);
+         return;
+    }
+
+    int updatedCount = 0;
+    // Update the global 'stages' array with loaded values
+    for (int i = 0; i < numStages; ++i) {
+        JsonObject loadedStage = loadedStages[i];
+        if (!loadedStage) continue;
+
+        // Verify name matches to prevent issues if default order changes
+        const char* loadedName = loadedStage["name"];
+        if (loadedName && strcmp(loadedName, stages[i].name) == 0) {
+            // Update editable fields if present and valid
+            if (loadedStage.containsKey("humidityThreshold")) {
+                int newThreshold = loadedStage["humidityThreshold"];
+                if (newThreshold >= 0 && newThreshold <= 100) {
+                    stages[i].humidityThreshold = newThreshold;
+                } else {
+                    Serial.print("[WARN] Umbral humedad inválido para '"); Serial.print(stages[i].name); Serial.println("' en config. Usando default.");
+                }
+            }
+            if (loadedStage.containsKey("wateringTimeSec")) {
+                int newWateringTime = loadedStage["wateringTimeSec"];
+                 if (newWateringTime > 0 && newWateringTime <= 600) { // Example validation
+                    stages[i].wateringTimeSec = newWateringTime;
+                 } else {
+                     Serial.print("[WARN] Tiempo riego inválido para '"); Serial.print(stages[i].name); Serial.println("' en config. Usando default.");
+                 }
+            }
+            // Add duration_days update here if you want it editable later
+            updatedCount++;
+        } else {
+            Serial.print("[WARN] Discrepancia de nombre o entrada inválida en índice ");
+            Serial.print(i); Serial.print(" en config. Usando default para '");
+            Serial.print(stages[i].name); Serial.println("'.");
+             // If names mismatch, probably safest to revert to all defaults
+             // loadStagesConfig(); // Re-read defaults essentially (or handle differently)
+        }
+    }
+
+    if (updatedCount == numStages) {
+        Serial.println("[INFO] Configuración de etapas personalizada cargada correctamente.");
+    } else {
+         Serial.println("[WARN] Configuración de etapas cargada parcialmente debido a errores/discrepancias.");
+    }
+}
+
+// NEW: Save the current state of the 'stages' array to LittleFS
+bool saveStagesConfig() {
+    Serial.print("[ACTION] Guardando configuración de etapas en "); Serial.println(STAGES_CONFIG_FILE);
+    StaticJsonDocument<1024> doc; // Adjust size as needed
+    JsonArray stagesArray = doc.to<JsonArray>();
+
+    // Populate the JSON array from the current 'stages' data
+    for (int i = 0; i < numStages; ++i) {
+        JsonObject stageObj = stagesArray.createNestedObject();
+        stageObj["name"] = stages[i].name; // Include name for verification on load
+        stageObj["humidityThreshold"] = stages[i].humidityThreshold;
+        stageObj["wateringTimeSec"] = stages[i].wateringTimeSec;
+        // Add duration_days here if it becomes editable
+        // stageObj["duration_days"] = stages[i].duration_days;
+    }
+
+    File configFile = LittleFS.open(STAGES_CONFIG_FILE, "w");
+    if (!configFile) {
+        Serial.println("[ERROR] No se pudo abrir archivo de configuración de etapas para escritura.");
+        return false;
+    }
+
+    size_t bytesWritten = serializeJson(doc, configFile);
+    configFile.close();
+
+    if (bytesWritten > 0) {
+        Serial.println("[INFO] Configuración de etapas guardada correctamente.");
+        return true;
+    } else {
+        Serial.println("[ERROR] Falló al escribir configuración de etapas en archivo.");
+        return false;
+    }
+}
+
 // Lógica principal de control (sensores, decisión riego, registro)
 void controlIndependiente() {
     unsigned long startMillis = millis();
@@ -679,18 +804,18 @@ void controlIndependiente() {
     }
     previousSensorValid = sensorValid;
 
-    // 3. Determinar etapa y parámetros
+    // 3. Determinar etapa y parámetros (uses potentially modified 'stages' array)
     int stageIndex = getCurrentStageIndex(elapsedDays);
     const Stage& currentStage = stages[stageIndex];
-    int currentThreshold = currentStage.humidityThreshold;
-    unsigned long wateringTimeMs = currentStage.wateringTimeSec * 1000UL;
+    int currentThreshold = currentStage.humidityThreshold; // Use potentially modified threshold
+    unsigned long wateringTimeMs = currentStage.wateringTimeSec * 1000UL; // Use potentially modified watering time
     Serial.print("[INFO] Etapa: "); Serial.print(currentStage.name); Serial.print(" ("); Serial.print(manualStageControl ? "Manual" : "Auto"); Serial.println(")");
     Serial.print("       Umbral: "); Serial.print(currentThreshold); Serial.print("%, Riego: "); Serial.print(currentStage.wateringTimeSec); Serial.println("s");
 
     // 4. Decidir riego (solo si bomba no está en auto-off)
     bool needsWatering = false;
     if (!pumpAutoOff) {
-        if (sensorValid && humidity < currentThreshold) {
+        if (sensorValid && humidity < currentThreshold) { // Uses currentThreshold
             Serial.println("[DECISION] Humedad bajo umbral -> Regar.");
             needsWatering = true;
         } else if (!sensorValid && failureStartTimeEpoch > 0) {
@@ -708,7 +833,7 @@ void controlIndependiente() {
              Serial.println("[DECISION] Sensor inválido (1ra vez). No regar.");
         }
         // Actuar solo si es necesario y bomba no está ya ON
-        if (needsWatering && !pumpActivated) activatePump(wateringTimeMs);
+        if (needsWatering && !pumpActivated) activatePump(wateringTimeMs); // Uses wateringTimeMs
     } else {
         Serial.println("[INFO] Bomba en Auto-Off. Omitiendo decisión riego.");
     }
@@ -732,6 +857,7 @@ void controlIndependiente() {
     unsigned long duration = millis() - startMillis;
     Serial.print("[CONTROL] Ciclo finalizado en "); Serial.print(duration); Serial.println(" ms.");
 }
+
 
 // --- Handlers HTTP ---
 
@@ -766,7 +892,7 @@ void handleData() {
     uint32_t elapsedSeconds = dtNow.unixtime() - rtcBootEpoch;
     uint32_t elapsedDays = elapsedSeconds / 86400;
     int stageIndex = getCurrentStageIndex(elapsedDays);
-    const Stage& currentStage = stages[stageIndex];
+    const Stage& currentStage = stages[stageIndex]; // Use potentially modified stage data
 
     StaticJsonDocument<512> doc;
     if (temperature > -90.0) doc["temperature"] = serialized(String(temperature, 1)); else doc["temperature"] = nullptr;
@@ -779,8 +905,8 @@ void handleData() {
     doc["lastMeasurementTimestamp"] = lastMeasurementTimestamp;
     doc["currentStageName"] = currentStage.name;
     doc["currentStageIndex"] = stageIndex;
-    doc["currentStageThreshold"] = currentStage.humidityThreshold;
-    doc["currentStageWateringSec"] = currentStage.wateringTimeSec;
+    doc["currentStageThreshold"] = currentStage.humidityThreshold; // Return current threshold
+    doc["currentStageWateringSec"] = currentStage.wateringTimeSec; // Return current watering time
     doc["manualStageControl"] = manualStageControl;
     if (WiFi.status() == WL_CONNECTED) {
        doc["deviceIP"] = WiFi.localIP().toString();
@@ -999,14 +1125,14 @@ void handleGetCurrentStage() {
      uint32_t elapsedSeconds = rtc.now().unixtime() - rtcBootEpoch;
      uint32_t elapsedDays = elapsedSeconds / 86400;
      int stageIndex = getCurrentStageIndex(elapsedDays);
-     const Stage& currentStage = stages[stageIndex];
+     const Stage& currentStage = stages[stageIndex]; // Use potentially modified stage data
      StaticJsonDocument<256> doc;
      doc["currentStage"] = currentStage.name;
      doc["stageIndex"] = stageIndex;
      doc["manualControl"] = manualStageControl;
      JsonObject params = doc.createNestedObject("params");
-     params["threshold"] = currentStage.humidityThreshold;
-     params["watering"] = currentStage.wateringTimeSec;
+     params["threshold"] = currentStage.humidityThreshold; // Return current threshold
+     params["watering"] = currentStage.wateringTimeSec;     // Return current watering time
      params["duration_days"] = currentStage.duration_days;
      String response; serializeJson(doc, response);
      server.send(200, "application/json", response);
@@ -1022,23 +1148,92 @@ void handleResetManualStage() {
      server.send(200, "application/json", "{\"status\":\"success\", \"message\":\"Manual stage reset\"}");
 }
 
-// Handler para /listStages - Listar todas las etapas
+// Handler para /listStages - Listar todas las etapas (FROM CURRENT STATE)
 void handleListStages() {
     Serial.println("[HTTP] Solicitud /listStages (GET).");
     server.sendHeader("Access-Control-Allow-Origin", "*");
-    server.sendHeader("Cache-Control", "max-age=86400"); // Cache for 1 day
+    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate"); // Don't cache stage list as it can be edited
     DynamicJsonDocument doc(JSON_ARRAY_SIZE(numStages) + numStages * JSON_OBJECT_SIZE(5) + 100);
     JsonArray stagesArray = doc.to<JsonArray>();
+    // Use the potentially modified global 'stages' array
     for (int i = 0; i < numStages; i++) {
         JsonObject stageObj = stagesArray.createNestedObject();
-        stageObj["index"] = i; stageObj["name"] = stages[i].name;
+        stageObj["index"] = i;
+        stageObj["name"] = stages[i].name;
         stageObj["duration_days"] = stages[i].duration_days;
-        stageObj["humidityThreshold"] = stages[i].humidityThreshold;
-        stageObj["wateringTimeSec"] = stages[i].wateringTimeSec;
+        stageObj["humidityThreshold"] = stages[i].humidityThreshold; // Return current value
+        stageObj["wateringTimeSec"] = stages[i].wateringTimeSec;     // Return current value
     }
     String response; serializeJson(doc, response);
     server.send(200, "application/json", response);
 }
+
+// NEW: Handler for /updateStage - Update parameters for a specific stage
+void handleUpdateStage() {
+    Serial.println("[HTTP] Solicitud /updateStage (POST).");
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+
+    if (!server.hasArg("plain")) {
+        server.send(400, "text/plain", "Bad Request: Missing body");
+        return;
+    }
+    String body = server.arg("plain");
+    StaticJsonDocument<256> doc; // JSON should be small for a single stage update
+    DeserializationError error = deserializeJson(doc, body);
+
+    if (error) {
+        server.send(400, "text/plain", "Bad Request: Invalid JSON");
+        return;
+    }
+
+    if (!doc.containsKey("index") || !doc["index"].is<int>()) {
+        server.send(400, "text/plain", "Bad Request: Missing or invalid 'index'");
+        return;
+    }
+    int index = doc["index"];
+
+    if (index < 0 || index >= numStages) {
+        server.send(400, "text/plain", "Bad Request: Invalid stage index");
+        return;
+    }
+
+    // Validate and update humidityThreshold
+    if (!doc.containsKey("humidityThreshold") || !doc["humidityThreshold"].is<int>()) {
+        server.send(400, "text/plain", "Bad Request: Missing or invalid 'humidityThreshold'");
+        return;
+    }
+    int newThreshold = doc["humidityThreshold"];
+    if (newThreshold < 0 || newThreshold > 100) {
+        server.send(400, "text/plain", "Bad Request: Invalid humidity threshold (0-100)");
+        return;
+    }
+
+    // Validate and update wateringTimeSec
+    if (!doc.containsKey("wateringTimeSec") || !doc["wateringTimeSec"].is<int>()) {
+        server.send(400, "text/plain", "Bad Request: Missing or invalid 'wateringTimeSec'");
+        return;
+    }
+    int newWateringTime = doc["wateringTimeSec"];
+    if (newWateringTime <= 0 || newWateringTime > 600) { // Example range validation
+        server.send(400, "text/plain", "Bad Request: Invalid watering time (1-600s)");
+        return;
+    }
+
+    // Update the in-memory stage data
+    stages[index].humidityThreshold = newThreshold;
+    stages[index].wateringTimeSec = newWateringTime;
+    Serial.print("[ACCION] Etapa '"); Serial.print(stages[index].name);
+    Serial.print("' actualizada -> Umbral: "); Serial.print(newThreshold);
+    Serial.print("%, Riego: "); Serial.print(newWateringTime); Serial.println("s");
+
+    // Save the updated configuration to file
+    if (saveStagesConfig()) {
+        server.send(200, "application/json", "{\"status\":\"success\", \"message\":\"Stage updated and saved\"}");
+    } else {
+        server.send(500, "application/json", "{\"status\":\"error\", \"message\":\"Stage updated in memory, but failed to save to file\"}");
+    }
+}
+
 
 // Inicia modo AP
 void startAPMode() {
@@ -1063,23 +1258,25 @@ void setupServer() {
     // --- Página Principal (Redirección) ---
     server.on("/", HTTP_GET, handleRoot);
 
-    // --- Endpoints API ---
+    // --- Endpoints API GET ---
     server.on("/data", HTTP_GET, handleData);
     server.on("/loadMeasurement", HTTP_GET, handleLoadMeasurement);
-    server.on("/getMeasurementInterval", HTTP_GET, handleMeasurementInterval); // GET part
+    server.on("/getMeasurementInterval", HTTP_GET, handleMeasurementInterval);
     server.on("/getCurrentStage", HTTP_GET, handleGetCurrentStage);
-    server.on("/listStages", HTTP_GET, handleListStages);
+    server.on("/listStages", HTTP_GET, handleListStages); // Returns current/modified stages
     server.on("/wifiList", HTTP_GET, handleWifiListRequest);
 
+    // --- Endpoints API POST ---
     server.on("/clearHistory", HTTP_POST, handleClearMeasurementHistory);
     server.on("/connectWifi", HTTP_POST, handleConnectWifi);
     server.on("/saveWifiCredentials", HTTP_POST, handleSaveWifiCredentials);
     server.on("/controlPump", HTTP_POST, handlePumpControl);
-    server.on("/setMeasurementInterval", HTTP_POST, handleMeasurementInterval); // POST part
+    server.on("/setMeasurementInterval", HTTP_POST, handleMeasurementInterval);
     server.on("/setManualStage", HTTP_POST, handleSetManualStage);
     server.on("/resetManualStage", HTTP_POST, handleResetManualStage);
+    server.on("/updateStage", HTTP_POST, handleUpdateStage); // NEW: Endpoint to update stage config
 
-    // --- Acciones Directas ---
+    // --- Acciones Directas (POST) ---
     server.on("/takeMeasurement", HTTP_POST, [](){
          Serial.println("[HTTP] Solicitud /takeMeasurement (POST).");
          server.sendHeader("Access-Control-Allow-Origin", "*");
@@ -1162,11 +1359,13 @@ void handleSerialCommands() {
              Serial.print("Uptime: "); Serial.print(elapsedSeconds / 86400); Serial.print("d "); Serial.print((elapsedSeconds % 86400) / 3600); Serial.print("h "); Serial.print((elapsedSeconds % 3600) / 60); Serial.println("m");
              float h = getHumidity(); float t = getTemperature(); Serial.print("Sensor: T="); Serial.print(t, 1); Serial.print("C H="); Serial.print(h, 1); Serial.println("%");
              Serial.print("Pump: "); Serial.print(pumpActivated ? "ON" : "OFF"); if (pumpAutoOff) Serial.print(" (Auto)"); Serial.println();
-             int stageIdx = getCurrentStageIndex(elapsedSeconds / 86400); Serial.print("Stage: "); Serial.print(stages[stageIdx].name); Serial.print(" ("); Serial.print(manualStageControl ? "Manual" : "Auto"); Serial.println(")");
+             int stageIdx = getCurrentStageIndex(elapsedSeconds / 86400); Serial.print("Stage: "); Serial.print(stages[stageIdx].name); Serial.print(" ("); Serial.print(manualStageControl ? "Manual" : "Auto"); Serial.print(") - Threshold: "); Serial.print(stages[stageIdx].humidityThreshold); Serial.print("%, Water: "); Serial.print(stages[stageIdx].wateringTimeSec); Serial.println("s");
              Serial.print("WiFi: "); Serial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : (WiFi.getMode() == WIFI_AP ? "AP Mode" : "Disconnected"));
              Serial.print("History: "); Serial.println(jsonIndex);
              unsigned long remainingMs = (nextMeasureTimestamp > millis()) ? (nextMeasureTimestamp - millis()) : 0; Serial.print("Next ~: "); Serial.print(remainingMs / 3600000UL); Serial.print("h "); Serial.print((remainingMs % 3600000UL) / 60000UL); Serial.println("m");
              Serial.print("Heap: "); Serial.println(ESP.getFreeHeap());
+             Serial.println("--- Current Stages ---");
+             for(int i=0; i<numStages; i++) { Serial.printf(" [%d] %s: Dur=%dd, Thr=%d%%, Wat=%ds\n", i, stages[i].name, stages[i].duration_days, stages[i].humidityThreshold, stages[i].wateringTimeSec); }
              Serial.println("---------------------");
         } else if (command.equalsIgnoreCase("MEASURE")) { Serial.println("[SERIAL] Forzando medición..."); controlIndependiente(); }
         else if (command.equalsIgnoreCase("PUMP ON")) { Serial.println("[SERIAL] Bomba ON (30s)..."); activatePump(30000); }
@@ -1180,5 +1379,3 @@ void handleSerialCommands() {
         else { Serial.println("[WARN] Comando desconocido. Ver STATUS."); }
     }
 }
-
-// --- END OF FILE main.cpp ---

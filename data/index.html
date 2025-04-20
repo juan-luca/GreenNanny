@@ -259,7 +259,7 @@
         #systemStatusWidget .widget-body span { text-align: right; }
         #pumpStatusIndicator { font-size: 0.9em; transition: background-color var(--gn-transition-fast), color var(--gn-transition-fast); display: inline-flex; align-items: center; gap: var(--gn-spacing-xs); }
         #stageModeIndicator { font-size: 0.9em; display: inline-flex; align-items: center; gap: var(--gn-spacing-xs);} /* (27) */
-        #wifiStatus i { margin-right: var(--gn-spacing-xs); font-size: 0.9em; } /* (28, 29) */
+        #wifiStatusWrapper i { margin-right: var(--gn-spacing-xs); font-size: 0.9em; } /* Target icon inside wrapper */
         #lastMeasurementTime { font-size: 0.85em; color: var(--gn-text-muted); }
         #updatingIndicator i { animation: spin 1.5s linear infinite; } /* Make sync icon spin */
 
@@ -342,6 +342,10 @@
              width: 100%; text-align: center; font-style: italic; padding: var(--gn-spacing-md) 0; color: var(--gn-text-muted);
              display: flex; align-items: center; justify-content: center; gap: var(--gn-spacing-sm);
         }
+        .measurement-history-entry .error-indicator {
+             width: 100%; text-align: center; font-style: italic; padding: var(--gn-spacing-md) 0; color: var(--gn-warning);
+             display: flex; align-items: center; justify-content: center; gap: var(--gn-spacing-sm);
+        }
         /* Custom Scrollbars (7) */
          #measurementHistory {
               scrollbar-width: thin; /* Firefox */
@@ -358,16 +362,21 @@
         }
         #statisticsSection .widget-title { font-size: 1.15rem; /* (59) */ }
         #statisticsSection table { margin-bottom: 0 !important; }
+        #statisticsSection thead {
+            position: sticky; /* Make header sticky */
+            top: 0; /* Stick to the top of the container */
+            background-color: var(--gn-card-bg); /* Ensure background covers scrolled content */
+            z-index: 2; /* Above table body content */
+        }
         #statisticsSection th { /* (53) */
              font-weight: var(--gn-label-font-weight);
              color: var(--gn-text-muted);
              white-space: nowrap;
              border-bottom: 2px solid var(--gn-border-color); /* Thicker header border */
              padding-bottom: var(--gn-spacing-sm); /* More padding */
+             padding-top: var(--gn-spacing-sm); /* Match bottom padding */
              text-align: center; /* Center headers */
-             position: sticky; top: 0; /* Sticky Headers */
-             background-color: var(--gn-card-bg); /* Background for sticky */
-             z-index: 1;
+             vertical-align: middle;
         }
          #statisticsSection th:first-child { text-align: left; } /* Left align period/stage name */
          #statisticsSection td {
@@ -381,17 +390,17 @@
          #statisticsSection tbody tr:nth-child(odd):not(.text-muted) { /* (54) - Zebra stripes */
              background-color: rgba(0,0,0,0.05);
          }
-         #statisticsSection .text-muted td { font-size: 0.8em; padding: var(--gn-spacing-xs) var(--gn-spacing-sm); color: var(--gn-text-muted) !important; border-bottom: none; } /* Range row */
-         #statisticsSection small { font-size: 0.8em; color: var(--gn-text-muted); } /* Min-max range */
+         #statisticsSection .text-muted td { font-size: 0.8em; padding: var(--gn-spacing-xs) var(--gn-spacing-sm); color: var(--gn-text-muted) !important; border-bottom: none; border-top: 1px dashed var(--gn-border-color); } /* Range row */
+         #statisticsSection small { font-size: 0.8em; color: var(--gn-text-muted); display: block; line-height: 1.2;} /* Min-max range */
          #statisticsSection .stat-na { color: var(--gn-text-muted); font-style: italic; /* (55) */ }
 
          /* Responsive table handling (60) */
-         .stats-table-container { overflow-x: auto; }
+         .stats-table-container { overflow-x: auto; max-height: 400px; /* Add max height for scroll */ }
          #statisticsSection .loading-indicator, #statisticsSection .error-indicator { /* Styling for stats loading/error */
              text-align: center; font-style: italic; padding: var(--gn-spacing-lg); color: var(--gn-text-muted);
              display: flex; align-items: center; justify-content: center; gap: var(--gn-spacing-sm);
          }
-         #statisticsSection .error-indicator { color: var(--gn-danger); }
+         #statisticsSection .error-indicator { color: var(--gn-danger); font-weight: 500; }
 
 
         /* --- Forms & Controls --- */
@@ -432,6 +441,17 @@
          .form-select {
               background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23adb5bd' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
          }
+         /* Ensure number input spinners are styled for dark mode */
+        input[type=number]::-webkit-inner-spin-button,
+        input[type=number]::-webkit-outer-spin-button {
+            -webkit-appearance: button; /* Use button appearance for better visibility */
+            opacity: 0.5;
+            filter: invert(1) brightness(0.8); /* Make arrows visible on dark input */
+            cursor: pointer;
+            margin: 0 2px 0 0; /* Add slight margin */
+        }
+        input[type=number] { -moz-appearance: textfield; } /* Firefox */
+
 
         /* --- Buttons --- */
         .btn {
@@ -590,6 +610,25 @@
          .badge .loader, .badge .spinner-border { border-right-color: currentColor !important; border-color: rgba(255,255,255,0.3) !important;}
          .badge.text-dark .loader, .badge.text-dark .spinner-border { border-right-color: currentColor !important; border-color: rgba(0,0,0,0.3) !important; }
 
+         /* Align stage config table */
+         #stageConfigTableContainer .table th, #stageConfigTableContainer .table td {
+             padding-top: var(--gn-spacing-xs);
+             padding-bottom: var(--gn-spacing-xs);
+             vertical-align: middle; /* Ensure vertical alignment */
+         }
+         #stageConfigTableContainer .table th:first-child, #stageConfigTableContainer .table td:first-child {
+             text-align: left;
+             padding-left: var(--gn-spacing-sm); /* Add padding for first column */
+         }
+          #stageConfigTableContainer .table td:last-child {
+              padding-right: var(--gn-spacing-sm); /* Add padding for actions column */
+          }
+         #stageConfigTableContainer .table th {
+             font-weight: var(--gn-label-font-weight);
+             color: var(--gn-text-muted);
+         }
+
+
     </style>
 </head>
 <body class="hold-transition sidebar-mini layout-fixed dark-mode">
@@ -645,7 +684,7 @@
                     <!-- Row 1: Key Sensor Data & Stage -->
                      <div class="row gy-4">
                         <div class="col-lg-3 col-md-6">
-                            
+
                             <div class="small-box widget-loading" id="tempWidget">
                                 <div class="inner">
                                     <h3 id="temperature">- °C</h3>
@@ -708,7 +747,13 @@
                                  <div class="widget-body">
                                      <p><strong>Pump:</strong> <span id="pumpStatusIndicator" class="badge bg-secondary"><span class="loader loader-sm" role="status"></span></span></p>
                                      <p><strong>Mode:</strong> <span id="stageModeIndicator" class="badge bg-secondary"><span class="loader loader-sm" role="status"></span></span></p>
-                                     <p><strong>WiFi:</strong> <span id="wifiStatus" class="text-muted"><i class="fas fa-wifi text-secondary" aria-hidden="true"></i> <span class="loader loader-sm" role="status"></span> Checking...</span></p>
+                                     <!-- Structure for WiFi Status and Tooltip -->
+                                     <p><strong>WiFi:</strong>
+                                         <span id="wifiStatusWrapper" class="text-muted" data-bs-toggle="tooltip" data-bs-placement="top" title="Checking WiFi...">
+                                             <span id="wifiStatusContent"><i class="fas fa-wifi text-secondary" aria-hidden="true"></i> <span class="loader loader-sm" role="status"></span> Checking...</span>
+                                         </span>
+                                     </p>
+                                     <!-- End Structure -->
                                      <p class="mb-0"><strong>Last Reading:</strong> <small id="lastMeasurementTime" class="text-muted">-</small> <span id="updatingIndicator" class="text-primary small ms-1" style="display: none;"><i class="fas fa-sync"></i> Updating...</span></p>
                                  </div>
                              </div>
@@ -760,8 +805,8 @@
                     <!-- Row 5: Controls & Settings -->
                     <section class="row" aria-label="Controls and Settings">
                          <div class="col-12"><h2 class="h4 mb-3">Controls & Settings</h2></div>
-                        <div class="col-lg-6 d-flex flex-column gap-3"> 
-                             <fieldset class="widget-dark mb-0"> 
+                        <div class="col-lg-6 d-flex flex-column gap-3">
+                             <fieldset class="widget-dark mb-0">
                                  <legend class="widget-title">
                                       <i class="fas fa-seedling me-2 opacity-75" aria-hidden="true"></i>Plant Stage Control
                                       <span id="manualControlIndicator" class="badge bg-warning text-dark ms-2" style="display: none;">Manual Mode</span>
@@ -789,7 +834,7 @@
                                 </div>
                             </fieldset>
 
-                            <fieldset class="widget-dark mb-0"> 
+                            <fieldset class="widget-dark mb-0">
                                 <legend class="widget-title"><i class="fas fa-clock me-2 opacity-75" aria-hidden="true"></i>Measurement Interval</legend>
                                 <div class="widget-body">
                                     <form id="intervalForm" class="row gx-2 gy-2 align-items-end">
@@ -810,14 +855,53 @@
                         </div>
 
                         <div class="col-lg-6">
-                            <fieldset class="widget-dark h-100"> 
+                            <fieldset class="widget-dark h-100">
                                 <legend class="widget-title"><i class="fas fa-cogs me-2 opacity-75" aria-hidden="true"></i>System Actions</legend>
                                 <div class="widget-body action-button-group">
                                     <button id="activatePump" class="btn btn-success"><i class="fas fa-play-circle" aria-hidden="true"></i> Activate Pump...</button>
                                     <button id="deactivatePump" class="btn btn-warning"><i class="fas fa-stop-circle" aria-hidden="true"></i> Deactivate Pump</button>
                                     <button id="takeMeasurement" class="btn btn-info"><i class="fas fa-ruler-combined" aria-hidden="true"></i> Trigger Measurement</button>
                                     <button id="clearMeasurements" class="btn btn-danger"><i class="fas fa-trash-alt" aria-hidden="true"></i> Clear History</button>
-                                    <button id="restartSystem" class="btn btn-outline-danger mt-auto"><i class="fas fa-power-off" aria-hidden="true"></i> Restart System</button> 
+                                    <button id="restartSystem" class="btn btn-outline-danger mt-auto"><i class="fas fa-power-off" aria-hidden="true"></i> Restart System</button>
+                                </div>
+                            </fieldset>
+                        </div>
+                    </section>
+
+                    <hr/>
+
+                    <!-- Row 6: Stage Configuration (NEW) -->
+                    <section class="row" aria-labelledby="stage-config-title">
+                        <div class="col-12">
+                            <h2 class="h4 mb-3" id="stage-config-title">Stage Configuration</h2>
+                            <fieldset class="widget-dark">
+                                <legend class="widget-title">
+                                    <i class="fas fa-sliders-h me-2 opacity-75" aria-hidden="true"></i>Edit Stage Parameters
+                                </legend>
+                                <div class="widget-body">
+                                    <div id="stageConfigLoading" class="text-center p-3 text-muted">
+                                        <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span> Loading stage configurations...
+                                    </div>
+                                    <div id="stageConfigError" class="alert alert-danger d-none" role="alert">
+                                        Error loading stage configurations.
+                                    </div>
+                                    <div class="table-responsive d-none" id="stageConfigTableContainer">
+                                        <table class="table table-sm table-borderless table-dark small mb-0 align-middle">
+                                            <thead>
+                                                <tr>
+                                                    <th>Stage Name</th>
+                                                    <th class="text-center">Duration (Days)</th>
+                                                    <th class="text-center">Humidity Threshold (%)</th>
+                                                    <th class="text-center">Watering Time (s)</th>
+                                                    <th class="text-center">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="stageConfigTableBody">
+                                                <!-- Stage rows will be populated by JS -->
+                                            </tbody>
+                                        </table>
+                                        <div class="form-text mt-2">Changes are saved per stage when you click its 'Save' button.</div>
+                                    </div>
                                 </div>
                             </fieldset>
                         </div>
