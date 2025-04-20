@@ -1,0 +1,6 @@
+1) Medicion cuando falla sensor
+
+
+2) Funcionamiento cuando no esta conectado a wifi
+
+3) STAGES configurables elumbral de humdad
