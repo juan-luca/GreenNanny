@@ -1000,51 +1000,62 @@ function initTooltips(parentElement = document.body) {
 
 // --- NEW: Stage Configuration Table Functions ---
 function renderStageConfigTable(stagesData) {
-    if (!El.stageConfigTableBody || !El.stageConfigTableContainer || !El.stageConfigLoading || !El.stageConfigError) {
-        console.error("Stage config table elements not found.");
+    if (!El.stageConfigTableBody) return;
+
+    El.stageConfigLoading.classList.add('d-none');
+    El.stageConfigError.classList.add('d-none');
+    El.stageConfigTableBody.innerHTML = '';
+
+    if (!Array.isArray(stagesData) || stagesData.length === 0) {
+        El.stageConfigError.textContent = "No stage configuration data received.";
+        El.stageConfigError.classList.remove('d-none');
         return;
     }
 
-    El.stageConfigLoading.classList.add('d-none'); // Hide loading indicator
-
-    // Handle case where no data is received or is invalid
-    if (!stagesData || !Array.isArray(stagesData) || stagesData.length === 0) {
-        El.stageConfigError.textContent = "No stage configuration data received from the device.";
-        El.stageConfigError.classList.remove('d-none'); // Show error message
-        El.stageConfigTableContainer.classList.add('d-none'); // Hide table container
-        return;
-    }
-
-    El.stageConfigError.classList.add('d-none'); // Hide error message if data is valid
-    El.stageConfigTableBody.innerHTML = ''; // Clear previous table rows
-
-    // Populate table body with stage data
     stagesData.forEach(stage => {
         const row = El.stageConfigTableBody.insertRow();
-        row.dataset.stageIndex = stage.index; // Add index to row for easier access
+        row.dataset.stageIndex = stage.index;
         row.innerHTML = `
             <td><strong class="text-light">${stage.name}</strong></td>
-            <td class="text-center">${stage.duration_days}</td>
+
             <td class="text-center">
-                <input type="number" class="form-control form-control-sm bg-dark text-light text-center stage-input"
+                <input type="number"
+                       class="form-control form-control-sm bg-dark text-light text-center stage-input"
+                       value="${stage.duration_days}" min="1" max="365" step="1" required
+                       aria-label="Duration (days) for ${stage.name}"
+                       data-field="duration_days" data-index="${stage.index}"
+                       style="width:60px;display:inline-block;">
+            </td>
+
+            <td class="text-center">
+                <input type="number"
+                       class="form-control form-control-sm bg-dark text-light text-center stage-input"
                        value="${stage.humidityThreshold}" min="0" max="100" step="1" required
-                       aria-label="Humidity threshold for ${stage.name}" data-field="humidityThreshold" data-index="${stage.index}" style="width: 70px; display: inline-block;">
+                       aria-label="Humidity threshold for ${stage.name}"
+                       data-field="humidityThreshold" data-index="${stage.index}"
+                       style="width:70px;display:inline-block;">
             </td>
+
             <td class="text-center">
-                 <input type="number" class="form-control form-control-sm bg-dark text-light text-center stage-input"
-                        value="${stage.wateringTimeSec}" min="1" max="600" step="1" required
-                        aria-label="Watering time for ${stage.name}" data-field="wateringTimeSec" data-index="${stage.index}" style="width: 70px; display: inline-block;">
+                <input type="number"
+                       class="form-control form-control-sm bg-dark text-light text-center stage-input"
+                       value="${stage.wateringTimeSec}" min="1" max="600" step="1" required
+                       aria-label="Watering time (s) for ${stage.name}"
+                       data-field="wateringTimeSec" data-index="${stage.index}"
+                       style="width:70px;display:inline-block;">
             </td>
+
             <td class="text-center">
-                <button class="btn btn-sm btn-outline-primary save-stage-btn" data-index="${stage.index}" aria-label="Save changes for ${stage.name}">
-                    <i class="fas fa-save me-1" aria-hidden="true"></i>Save
+                <button class="btn btn-sm btn-outline-primary save-stage-btn"
+                        data-index="${stage.index}">
+                    <i class="fas fa-save me-1"></i>Save
                 </button>
-            </td>
-        `;
+            </td>`;
     });
 
-    El.stageConfigTableContainer.classList.remove('d-none'); // Show table container now that it's populated
+    El.stageConfigTableContainer.classList.remove('d-none');
 }
+
 
 async function fetchAndRenderStageConfig() {
     if (!El.stageConfigLoading) return; // Exit if loading element doesn't exist
@@ -1277,88 +1288,55 @@ function setupEventListeners() {
     });
 
 
-    // --- NEW: Stage Configuration Event Listener (Delegated to table body) ---
-    El.stageConfigTableBody?.addEventListener('click', async (event) => {
-        // Check if the clicked element or its parent is the save button
-        if (event.target.matches('.save-stage-btn, .save-stage-btn *')) {
-            const button = event.target.closest('.save-stage-btn');
-            const stageIndex = parseInt(button.dataset.index);
-            const row = button.closest('tr');
-
-            if (isNaN(stageIndex) || !row) {
-                console.error("Could not find stage index or row for save button.");
-                showToast("Internal error: Cannot save stage.", 'error');
-                return;
+    El.stageConfigTableBody?.addEventListener('click', async evt => {
+        if (!evt.target.closest('.save-stage-btn')) return;
+    
+        const btn   = evt.target.closest('.save-stage-btn');
+        const index = parseInt(btn.dataset.index, 10);
+        const row   = btn.closest('tr');
+    
+        // Inputs de la fila
+        const durInput   = row.querySelector('input[data-field="duration_days"]');
+        const humInput   = row.querySelector('input[data-field="humidityThreshold"]');
+        const waterInput = row.querySelector('input[data-field="wateringTimeSec"]');
+    
+        // Valores numéricos
+        const newDur   = parseInt(durInput.value,   10);
+        const newHum   = parseInt(humInput.value,   10);
+        const newWater = parseInt(waterInput.value, 10);
+    
+        // Validaciones
+        let ok = true;
+        const mark = (inp, cond) => { inp.classList.toggle('is-invalid', !cond); ok = ok && cond; };
+    
+        mark(durInput,   !isNaN(newDur)   && newDur   >= 1 && newDur   <= 365);
+        mark(humInput,   !isNaN(newHum)   && newHum   >= 0 && newHum   <= 100);
+        mark(waterInput, !isNaN(newWater) && newWater >= 1 && newWater <= 600);
+    
+        if (!ok) { showToast('Valores fuera de rango.', 'warning'); return; }
+    
+        setLoadingState(btn, true, 'Saving...');
+        try {
+            await postData('/updateStage', {
+                index:           index,
+                duration_days:   newDur,
+                humidityThreshold: newHum,
+                wateringTimeSec: newWater
+            });
+    
+            // Refrescar caché local
+            const s = allStagesInfo.find(s => s.index === index);
+            if (s) {
+                s.duration_days     = newDur;
+                s.humidityThreshold = newHum;
+                s.wateringTimeSec   = newWater;
             }
-
-            // Find the input fields within this specific row
-            const humidInput = row.querySelector('input[data-field="humidityThreshold"]');
-            const waterInput = row.querySelector('input[data-field="wateringTimeSec"]');
-
-            // Get and parse values
-            const newHumid = parseInt(humidInput?.value);
-            const newWaterTime = parseInt(waterInput?.value);
-
-            // --- Frontend Validation ---
-            let isValid = true;
-            // Validate Humidity Threshold
-            if (humidInput && (isNaN(newHumid) || newHumid < 0 || newHumid > 100)) {
-                humidInput.classList.add('is-invalid');
-                isValid = false;
-            } else if (humidInput) {
-                humidInput.classList.remove('is-invalid');
-            }
-            // Validate Watering Time
-            if (waterInput && (isNaN(newWaterTime) || newWaterTime < 1 || newWaterTime > 600)) { // Match backend validation
-                 waterInput.classList.add('is-invalid');
-                 isValid = false;
-            } else if (waterInput) {
-                 waterInput.classList.remove('is-invalid');
-            }
-
-            // If any field is invalid, show toast and focus the first invalid one
-            if (!isValid) {
-                showToast("Invalid input values. Check ranges (Hum: 0-100%, Time: 1-600s).", 'warning');
-                row.querySelector('.is-invalid')?.focus();
-                return;
-            }
-
-            // Get stage name for feedback messages
-            const stageName = row.cells[0].textContent.trim();
-
-            // --- Send Update to Backend ---
-            setLoadingState(button, true, "Saving...");
-            try {
-                const response = await postData('/updateStage', {
-                    index: stageIndex,
-                    humidityThreshold: newHumid,
-                    wateringTimeSec: newWaterTime
-                });
-                showToast(`Stage "${stageName}" updated successfully.`, 'success');
-                announceSRStatus(`Stage ${stageName} configuration saved.`);
-
-                // Update the global stage info cache immediately
-                const cachedStage = allStagesInfo.find(s => s.index === stageIndex);
-                if(cachedStage) {
-                    cachedStage.humidityThreshold = newHumid;
-                    cachedStage.wateringTimeSec = newWaterTime;
-                }
-
-                // Re-populate the manual stage selector dropdown in case it's open
-                await populateStageSelector();
-                // Refresh main dashboard data as settings affect behaviour/stats
-                await updateUI(); // Fetch data again to confirm changes reflected everywhere
-
-            } catch (error) {
-                 // Error toast is shown by postData function
-                 console.error(`Failed to save stage ${stageIndex}:`, error);
-                 // Optionally add specific error details if available from backend response?
-                 // e.g., showToast(`Failed to save "${stageName}": ${error.message}`, 'error');
-            } finally {
-                 setLoadingState(button, false); // Restore button state regardless of success/failure
-            }
-        }
+    
+            showToast('Stage updated.', 'success');
+        } catch (e) { /* postData ya muestra toast de error */ }
+        finally      { setLoadingState(btn, false); }
     });
+    
 
     // Add live input validation feedback for stage config table using event delegation
      El.stageConfigTableBody?.addEventListener('input', (event) => {

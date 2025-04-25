@@ -663,125 +663,37 @@ void formatMeasurementsToString(String& formattedString) {
 
 // NEW: Load custom stage configuration from LittleFS
 void loadStagesConfig() {
-    Serial.print("[SETUP] Intentando cargar configuración de etapas desde "); Serial.println(STAGES_CONFIG_FILE);
-    if (!LittleFS.exists(STAGES_CONFIG_FILE)) {
-        Serial.println("[INFO] No existe archivo de configuración de etapas. Usando defaults.");
-        return;
+    if (!LittleFS.exists(STAGES_CONFIG_FILE)) return;
+    File f = LittleFS.open(STAGES_CONFIG_FILE, "r");
+    StaticJsonDocument<256> doc;
+    if (deserializeJson(doc, f).code() != DeserializationError::Ok) { f.close(); return; }
+    JsonArray arr = doc.as<JsonArray>();
+    int i = 0;
+    for (JsonObject o : arr) {
+        if (i >= numStages) break;
+        stages[i].duration_days     = o["duration_days"]      | stages[i].duration_days;
+        stages[i].humidityThreshold = o["humidityThreshold"]  | stages[i].humidityThreshold;
+        stages[i].wateringTimeSec   = o["wateringTimeSec"]    | stages[i].wateringTimeSec;
+        i++;
     }
-
-    File configFile = LittleFS.open(STAGES_CONFIG_FILE, "r");
-    if (!configFile) {
-        Serial.println("[ERROR] No se pudo abrir el archivo de configuración de etapas para lectura.");
-        return;
-    }
-
-    // Increase size if necessary, depends on stage names and number of stages
-    StaticJsonDocument<1024> doc; // Adjust size as needed
-    DeserializationError error = deserializeJson(doc, configFile);
-    configFile.close();
-
-    if (error) {
-        Serial.print(F("[ERROR] Falló al deserializar stages_config.json: "));
-        Serial.println(error.f_str());
-        Serial.println("[WARN] Usando configuración de etapas default.");
-        // Optional: Delete corrupted file?
-        // LittleFS.remove(STAGES_CONFIG_FILE);
-        return;
-    }
-
-    if (!doc.is<JsonArray>()) {
-        Serial.println("[ERROR] stages_config.json no contiene un array JSON. Usando defaults.");
-        return;
-    }
-
-    JsonArray loadedStages = doc.as<JsonArray>();
-    if (loadedStages.size() != numStages) {
-         Serial.print("[WARN] El número de etapas en config (");
-         Serial.print(loadedStages.size());
-         Serial.print(") no coincide con el default (");
-         Serial.print(numStages);
-         Serial.println("). Usando defaults.");
-         // Optional: Delete mismatched file?
-         // LittleFS.remove(STAGES_CONFIG_FILE);
-         return;
-    }
-
-    int updatedCount = 0;
-    // Update the global 'stages' array with loaded values
-    for (int i = 0; i < numStages; ++i) {
-        JsonObject loadedStage = loadedStages[i];
-        if (!loadedStage) continue;
-
-        // Verify name matches to prevent issues if default order changes
-        const char* loadedName = loadedStage["name"];
-        if (loadedName && strcmp(loadedName, stages[i].name) == 0) {
-            // Update editable fields if present and valid
-            if (loadedStage.containsKey("humidityThreshold")) {
-                int newThreshold = loadedStage["humidityThreshold"];
-                if (newThreshold >= 0 && newThreshold <= 100) {
-                    stages[i].humidityThreshold = newThreshold;
-                } else {
-                    Serial.print("[WARN] Umbral humedad inválido para '"); Serial.print(stages[i].name); Serial.println("' en config. Usando default.");
-                }
-            }
-            if (loadedStage.containsKey("wateringTimeSec")) {
-                int newWateringTime = loadedStage["wateringTimeSec"];
-                 if (newWateringTime > 0 && newWateringTime <= 600) { // Example validation
-                    stages[i].wateringTimeSec = newWateringTime;
-                 } else {
-                     Serial.print("[WARN] Tiempo riego inválido para '"); Serial.print(stages[i].name); Serial.println("' en config. Usando default.");
-                 }
-            }
-            // Add duration_days update here if you want it editable later
-            updatedCount++;
-        } else {
-            Serial.print("[WARN] Discrepancia de nombre o entrada inválida en índice ");
-            Serial.print(i); Serial.print(" en config. Usando default para '");
-            Serial.print(stages[i].name); Serial.println("'.");
-             // If names mismatch, probably safest to revert to all defaults
-             // loadStagesConfig(); // Re-read defaults essentially (or handle differently)
-        }
-    }
-
-    if (updatedCount == numStages) {
-        Serial.println("[INFO] Configuración de etapas personalizada cargada correctamente.");
-    } else {
-         Serial.println("[WARN] Configuración de etapas cargada parcialmente debido a errores/discrepancias.");
-    }
+    f.close();
 }
 
 // NEW: Save the current state of the 'stages' array to LittleFS
 bool saveStagesConfig() {
-    Serial.print("[ACTION] Guardando configuración de etapas en "); Serial.println(STAGES_CONFIG_FILE);
-    StaticJsonDocument<1024> doc; // Adjust size as needed
-    JsonArray stagesArray = doc.to<JsonArray>();
-
-    // Populate the JSON array from the current 'stages' data
-    for (int i = 0; i < numStages; ++i) {
-        JsonObject stageObj = stagesArray.createNestedObject();
-        stageObj["name"] = stages[i].name; // Include name for verification on load
-        stageObj["humidityThreshold"] = stages[i].humidityThreshold;
-        stageObj["wateringTimeSec"] = stages[i].wateringTimeSec;
-        // Add duration_days here if it becomes editable
-        // stageObj["duration_days"] = stages[i].duration_days;
+    StaticJsonDocument<256> doc;
+    JsonArray arr = doc.to<JsonArray>();
+    for (int i = 0; i < numStages; i++) {
+        JsonObject o = arr.createNestedObject();
+        o["duration_days"]      = stages[i].duration_days;
+        o["humidityThreshold"]  = stages[i].humidityThreshold;
+        o["wateringTimeSec"]    = stages[i].wateringTimeSec;
     }
-
-    File configFile = LittleFS.open(STAGES_CONFIG_FILE, "w");
-    if (!configFile) {
-        Serial.println("[ERROR] No se pudo abrir archivo de configuración de etapas para escritura.");
-        return false;
-    }
-
-    size_t bytesWritten = serializeJson(doc, configFile);
-    configFile.close();
-
-    if (bytesWritten > 0) {
-        Serial.println("[INFO] Configuración de etapas guardada correctamente.");
-        return true;
-    } else {
-        Serial.println("[ERROR] Falló al escribir configuración de etapas en archivo.");
-        return false;
-    }
+    File f = LittleFS.open(STAGES_CONFIG_FILE, "w");
+    if (!f) return false;
+    serializeJson(arr, f);
+    f.close();
+    return true;
 }
 
 // Lógica principal de control (sensores, decisión riego, registro)
@@ -1162,88 +1074,40 @@ void handleResetManualStage() {
 
 // Handler para /listStages - Listar todas las etapas (FROM CURRENT STATE)
 void handleListStages() {
-    Serial.println("[HTTP] Solicitud /listStages (GET).");
-    server.sendHeader("Access-Control-Allow-Origin", "*");
-    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate"); // Don't cache stage list as it can be edited
-    DynamicJsonDocument doc(JSON_ARRAY_SIZE(numStages) + numStages * JSON_OBJECT_SIZE(5) + 100);
-    JsonArray stagesArray = doc.to<JsonArray>();
-    // Use the potentially modified global 'stages' array
+    StaticJsonDocument<256> doc;
+    JsonArray arr = doc.to<JsonArray>();
     for (int i = 0; i < numStages; i++) {
-        JsonObject stageObj = stagesArray.createNestedObject();
-        stageObj["index"] = i;
-        stageObj["name"] = stages[i].name;
-        stageObj["duration_days"] = stages[i].duration_days;
-        stageObj["humidityThreshold"] = stages[i].humidityThreshold; // Return current value
-        stageObj["wateringTimeSec"] = stages[i].wateringTimeSec;     // Return current value
+        JsonObject o = arr.createNestedObject();
+        o["index"]             = i;
+        o["name"]              = stages[i].name;
+        o["duration_days"]     = stages[i].duration_days;
+        o["humidityThreshold"] = stages[i].humidityThreshold;
+        o["wateringTimeSec"]   = stages[i].wateringTimeSec;
     }
-    String response; serializeJson(doc, response);
-    server.send(200, "application/json", response);
+    String out;
+    serializeJson(arr, out);
+    server.send(200, "application/json", out);
 }
 
-// NEW: Handler for /updateStage - Update parameters for a specific stage
+/// Recibe JSON { index, duration_days, humidityThreshold, wateringTimeSec }
 void handleUpdateStage() {
-    Serial.println("[HTTP] Solicitud /updateStage (POST).");
-    server.sendHeader("Access-Control-Allow-Origin", "*");
-
     if (!server.hasArg("plain")) {
-        server.send(400, "text/plain", "Bad Request: Missing body");
+        server.send(400, "text/plain", "Missing body");
         return;
     }
-    String body = server.arg("plain");
-    StaticJsonDocument<256> doc; // JSON should be small for a single stage update
-    DeserializationError error = deserializeJson(doc, body);
-
-    if (error) {
-        server.send(400, "text/plain", "Bad Request: Invalid JSON");
+    StaticJsonDocument<192> doc;
+    auto err = deserializeJson(doc, server.arg("plain"));
+    if (err) { server.send(400, "text/plain", "Invalid JSON"); return; }
+    int idx = doc["index"] | -1;
+    if (idx < 0 || idx >= numStages) {
+        server.send(400, "text/plain", "Invalid index");
         return;
     }
-
-    if (!doc.containsKey("index") || !doc["index"].is<int>()) {
-        server.send(400, "text/plain", "Bad Request: Missing or invalid 'index'");
-        return;
-    }
-    int index = doc["index"];
-
-    if (index < 0 || index >= numStages) {
-        server.send(400, "text/plain", "Bad Request: Invalid stage index");
-        return;
-    }
-
-    // Validate and update humidityThreshold
-    if (!doc.containsKey("humidityThreshold") || !doc["humidityThreshold"].is<int>()) {
-        server.send(400, "text/plain", "Bad Request: Missing or invalid 'humidityThreshold'");
-        return;
-    }
-    int newThreshold = doc["humidityThreshold"];
-    if (newThreshold < 0 || newThreshold > 100) {
-        server.send(400, "text/plain", "Bad Request: Invalid humidity threshold (0-100)");
-        return;
-    }
-
-    // Validate and update wateringTimeSec
-    if (!doc.containsKey("wateringTimeSec") || !doc["wateringTimeSec"].is<int>()) {
-        server.send(400, "text/plain", "Bad Request: Missing or invalid 'wateringTimeSec'");
-        return;
-    }
-    int newWateringTime = doc["wateringTimeSec"];
-    if (newWateringTime <= 0 || newWateringTime > 600) { // Example range validation
-        server.send(400, "text/plain", "Bad Request: Invalid watering time (1-600s)");
-        return;
-    }
-
-    // Update the in-memory stage data
-    stages[index].humidityThreshold = newThreshold;
-    stages[index].wateringTimeSec = newWateringTime;
-    Serial.print("[ACCION] Etapa '"); Serial.print(stages[index].name);
-    Serial.print("' actualizada -> Umbral: "); Serial.print(newThreshold);
-    Serial.print("%, Riego: "); Serial.print(newWateringTime); Serial.println("s");
-
-    // Save the updated configuration to file
-    if (saveStagesConfig()) {
-        server.send(200, "application/json", "{\"status\":\"success\", \"message\":\"Stage updated and saved\"}");
-    } else {
-        server.send(500, "application/json", "{\"status\":\"error\", \"message\":\"Stage updated in memory, but failed to save to file\"}");
-    }
+    stages[idx].duration_days     = doc["duration_days"]      | stages[idx].duration_days;
+    stages[idx].humidityThreshold = doc["humidityThreshold"]  | stages[idx].humidityThreshold;
+    stages[idx].wateringTimeSec   = doc["wateringTimeSec"]    | stages[idx].wateringTimeSec;
+    saveStagesConfig();
+    handleListStages(); // Devuelve la lista actualizada
 }
 
 
@@ -1277,6 +1141,8 @@ void setupServer() {
     server.on("/getCurrentStage", HTTP_GET, handleGetCurrentStage);
     server.on("/listStages", HTTP_GET, handleListStages); // Returns current/modified stages
     server.on("/wifiList", HTTP_GET, handleWifiListRequest);
+
+    
 
     // --- Endpoints API POST ---
     server.on("/clearHistory", HTTP_POST, handleClearMeasurementHistory);
