@@ -225,75 +225,87 @@ void setup() {
 }
 
 void loop() {
-    unsigned long now = millis();
-
-    // Manejar clientes del servidor web
+    // Manejar clientes HTTP
     server.handleClient();
 
-    // Procesar solicitudes DNS (solo si está en modo AP)
+    // Procesar solicitudes DNS si está en modo AP
     if (WiFi.getMode() == WIFI_AP) {
-      dnsServer.processNextRequest();
+        dnsServer.processNextRequest();
     }
 
-    // Manejar comandos seriales para control manual
+    // Comandos seriales (opcional)
     handleSerialCommands();
 
-    // Apagar la bomba automáticamente si se cumplió el tiempo
-    if (pumpAutoOff && pumpActivated && (now - pumpOnTime >= pumpDurationMs)) {
+    // --- Auto-apagado de la bomba ---
+    unsigned long current = millis();  // Recalcular timestamp aquí
+    if (pumpAutoOff && pumpActivated && (current - pumpOnTime >= pumpDurationMs)) {
         Serial.println("[AUTO] Tiempo de riego (autoOff) cumplido.");
         deactivatePump();
     }
 
-    // Contar segundos si la bomba está activada con autoOff (debug)
-    if (pumpActivated && pumpAutoOff && (now - lastSecondPrint >= 1000)) {
+    // Conteo de segundos para debug si la bomba está encendida con auto-off
+    if (pumpActivated && pumpAutoOff && (current - lastSecondPrint >= 1000)) {
         pumpSecondsCount++;
-        lastSecondPrint = now;
+        lastSecondPrint = current;
     }
 
     // Verificar si es momento de tomar una medición programada
-    if (now >= nextMeasureTimestamp) {
+    if (current >= nextMeasureTimestamp) {
         Serial.println("[INFO] Hora de medición programada alcanzada.");
-        controlIndependiente(); // Ejecuta la lógica de medición y riego
+        controlIndependiente();  // Lógica automática de medición y riego
         // Programar la siguiente medición
-        nextMeasureTimestamp = now + (measurementInterval * 3600000UL); // Interval in milliseconds
-        Serial.print("[INFO] Próxima medición programada para millis: "); Serial.println(nextMeasureTimestamp);
+        nextMeasureTimestamp = current + (measurementInterval * 3600000UL);
+        Serial.print("[INFO] Próxima medición programada para millis: ");
+        Serial.println(nextMeasureTimestamp);
     }
 
     // Mensajes de debug periódicos (cada 10 minutos)
-    if (now - lastDebugPrint >= 600000) {
-        lastDebugPrint = now;
-        uint32_t rtcElapsedSeconds = rtc.now().unixtime() - rtcBootEpoch; // Use RTC for elapsed time
+    if (current - lastDebugPrint >= 600000) {
+        lastDebugPrint = current;
+        uint32_t rtcElapsedSeconds = rtc.now().unixtime() - rtcBootEpoch;
 
-        unsigned long remainingMs = (nextMeasureTimestamp > now) ? (nextMeasureTimestamp - now) : 0;
+        unsigned long remainingMs = (nextMeasureTimestamp > current)
+                                    ? (nextMeasureTimestamp - current)
+                                    : 0;
         unsigned long remainingSeconds = remainingMs / 1000;
-        unsigned long remainingHours = remainingSeconds / 3600;
+        unsigned long remainingHours   = remainingSeconds / 3600;
         unsigned long remainingMinutes = (remainingSeconds % 3600) / 60;
 
         Serial.println("--- DEBUG STATUS ---");
         Serial.print("[DEBUG] Uptime (RTC): ");
         Serial.print(rtcElapsedSeconds / 86400); Serial.print("d ");
         Serial.print((rtcElapsedSeconds % 86400) / 3600); Serial.print("h ");
-        Serial.print((rtcElapsedSeconds % 3600) / 60); Serial.println("m");
+        Serial.print((rtcElapsedSeconds % 3600) / 60);     Serial.println("m");
 
         Serial.print("[DEBUG] Próxima medición en aprox: ");
-        Serial.print(remainingHours); Serial.print("h ");
+        Serial.print(remainingHours);   Serial.print("h ");
         Serial.print(remainingMinutes); Serial.println("m");
-        Serial.print("[DEBUG] Estado Bomba: "); Serial.print(pumpActivated ? "ON" : "OFF");
+
+        Serial.print("[DEBUG] Estado Bomba: ");
+        Serial.print(pumpActivated ? "ON" : "OFF");
         if (pumpAutoOff) Serial.print(" (Auto-Off)");
         Serial.println();
-        Serial.print("[DEBUG] Memoria Libre: "); Serial.println(ESP.getFreeHeap());
+
+        Serial.print("[DEBUG] Memoria Libre: ");
+        Serial.println(ESP.getFreeHeap());
+
         if (WiFi.status() == WL_CONNECTED) {
-             Serial.print("[DEBUG] WiFi RSSI: "); Serial.print(WiFi.RSSI()); Serial.println(" dBm");
+            Serial.print("[DEBUG] WiFi RSSI: ");
+            Serial.print(WiFi.RSSI()); Serial.println(" dBm");
         } else {
-             Serial.println("[DEBUG] WiFi: Desconectado/AP");
+            Serial.println("[DEBUG] WiFi: Desconectado/AP");
         }
-        DateTime dtNow = rtc.now();
+
         char buf[20];
-        sprintf(buf, "%04u-%02u-%02u %02u:%02u:%02u", dtNow.year(), dtNow.month(), dtNow.day(), dtNow.hour(), dtNow.minute(), dtNow.second());
+        DateTime dtNow = rtc.now();
+        sprintf(buf, "%04u-%02u-%02u %02u:%02u:%02u",
+                dtNow.year(), dtNow.month(), dtNow.day(),
+                dtNow.hour(), dtNow.minute(), dtNow.second());
         Serial.print("[DEBUG] Hora RTC: "); Serial.println(buf);
         Serial.println("--------------------");
     }
 }
+
 
 // Configura el sensor DHT
 void setupDHTSensor() {
