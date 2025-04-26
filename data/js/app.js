@@ -291,7 +291,9 @@ function formatTimestampForHistory(epochMs) {
      const date = new Date(epochMs);
      const now = new Date();
      // Define formatting options, force UTC display
-     const options = { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' };
+     //const options = { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' };
+     const options = { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false };
+    
      // Add year only if it's not the current year
      if(date.getUTCFullYear() !== now.getUTCFullYear()) {
          options.year = 'numeric';
@@ -305,7 +307,7 @@ function formatTimestampForHistory(epochMs) {
                             date.getUTCFullYear() === now.getUTCFullYear();
          // If today, show "Today, HH:MM UTC"
          if (isTodayUTC) {
-              const timeFormatted = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' });
+              const timeFormatted = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false});
               return `Today, ${timeFormatted} UTC`;
          }
          // Otherwise, return the formatted date/time + UTC
