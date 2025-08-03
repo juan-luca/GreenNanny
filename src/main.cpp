@@ -52,6 +52,14 @@ int jsonIndex = 0;
 IPAddress gateway(192, 168, 0, 1);
 IPAddress subnet(255, 255, 255, 0);*/
 
+// Variables para la conexión WiFi asíncrona
+enum WifiConnectionState { IDLE, SENDING_INSTRUCTIONS, ATTEMPTING_CONNECTION, CONNECTION_IN_PROGRESS };
+WifiConnectionState wifiState = IDLE;
+String targetSsid = "";
+String targetPass = "";
+unsigned long connectionAttemptStartMillis = 0;
+
+
 // Variables de tiempo
 unsigned long startTime = 0; // millis() at boot
 unsigned long lastDebugPrint = 0;
@@ -338,7 +346,60 @@ void loop() {
 
     // Manejar clientes HTTP
     server.handleClient();
-    MDNS.update(); // <-- AÑADIDO
+    MDNS.update();
+
+    // --- MÁQUINA DE ESTADOS PARA CONEXIÓN WIFI ASÍNCRONA (VERSIÓN FINAL) ---
+    if (wifiState == SENDING_INSTRUCTIONS) {
+        // Este estado da un "período de gracia" para que el servidor web termine de enviar la página
+        // antes de iniciar el bloqueo de WiFi.begin(). 500ms es más que suficiente.
+        if (currentMillis - connectionAttemptStartMillis >= 500UL) {
+            Serial.println("[WIFI_STATE] Período de gracia finalizado. Intentando conectar ahora...");
+            wifiState = ATTEMPTING_CONNECTION; // Pasar al siguiente estado
+        }
+    }
+    else if (wifiState == ATTEMPTING_CONNECTION) {
+        Serial.println("[WIFI_STATE] Iniciando intento de conexión...");
+        
+        WiFi.disconnect();
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(targetSsid.c_str(), targetPass.c_str());
+        
+        wifiState = CONNECTION_IN_PROGRESS;
+        connectionAttemptStartMillis = currentMillis; // Reiniciar el temporizador para el timeout
+
+    } else if (wifiState == CONNECTION_IN_PROGRESS) {
+        // Verificar si la conexión fue exitosa
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("\n[WIFI_STATE] ¡Éxito! Conectado a la red.");
+            
+            File file = LittleFS.open("/WifiConfig.txt", "w");
+            if (file) {
+                file.println(targetSsid);
+                file.println(targetPass);
+                file.close();
+                Serial.println("[INFO] Credenciales guardadas permanentemente. Reiniciando...");
+                delay(1000);
+                ESP.restart();
+            } else {
+                Serial.println("[FATAL ERROR] No se pudo abrir 'WifiConfig.txt' para escritura!");
+                wifiState = IDLE;
+            }
+        }
+        // Verificar si se agotó el tiempo de espera (30 segundos)
+        else if (currentMillis - connectionAttemptStartMillis >= 30000UL) {
+            Serial.println("\n[WIFI_STATE] Falló la conexión (timeout).");
+            WiFi.disconnect(true);
+            
+            targetSsid = "";
+            targetPass = "";
+            wifiState = IDLE;
+            
+            Serial.println("[INFO] Reiniciando para volver al modo AP.");
+            delay(1000);
+            ESP.restart();
+        }
+    }
+    // --- FIN DE LA MÁQUINA DE ESTADOS ---
 
     // Procesar solicitudes DNS si está en modo AP
     if (WiFi.getMode() == WIFI_AP) {
@@ -357,7 +418,7 @@ void loop() {
     // Conteo de segundos para debug si la bomba está encendida con auto-off
     if (pumpActivated && pumpAutoOff && (currentMillis - lastSecondPrint >= 1000)) {
         pumpSecondsCount++;
-        Serial.print("[DEBUG PUMP] Riego en curso, segundo: "); Serial.println(pumpSecondsCount); // <-- Más informativo
+        Serial.print("[DEBUG PUMP] Riego en curso, segundo: "); Serial.println(pumpSecondsCount);
         lastSecondPrint = currentMillis;
     }
 
@@ -366,25 +427,24 @@ void loop() {
         Serial.println("[INFO] Hora de medición programada alcanzada.");
         controlIndependiente();  // Lógica automática de medición y riego
         // Programar la siguiente medición
-        nextMeasureTimestamp = currentMillis + (measurementInterval * 3600000UL); // Usar currentMillis como base
+        nextMeasureTimestamp = currentMillis + (measurementInterval * 3600000UL);
         Serial.print("[INFO] Próxima medición programada para millis: ");
         Serial.println(nextMeasureTimestamp);
     }
 
     // --- Sincronización NTP Periódica ---
-    // Intentar sincronizar solo si no está sincronizado O si ha pasado el intervalo
     if (WiFi.status() == WL_CONNECTED && (!ntpTimeSynchronized || (currentMillis - lastNtpSyncAttempt >= ntpSyncInterval))) {
         if (!ntpTimeSynchronized) {
              Serial.println("[LOOP] Hora no sincronizada, intentando NTP sync...");
         } else {
              Serial.println("[LOOP] Intervalo de sincronización NTP (" + String(ntpSyncInterval / 3600000UL) + "h) alcanzado.");
         }
-        syncNtpTime(); // Intentar sincronizar
-        lastNtpSyncAttempt = currentMillis; // Actualizar marca de tiempo del intento
+        syncNtpTime();
+        lastNtpSyncAttempt = currentMillis;
     }
 
     // Mensajes de debug periódicos (cada 10 minutos)
-    if (currentMillis - lastDebugPrint >= 600000) { // Usar currentMillis
+    if (currentMillis - lastDebugPrint >= 600000) {
         lastDebugPrint = currentMillis;
 
         time_t now_t = time(nullptr);
@@ -398,7 +458,7 @@ void loop() {
             localtime_r(&now_t, &timeinfo);
             strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
             uint32_t elapsedSeconds = now_t - ntpBootEpoch;
-            Serial.print("[DEBUG] Uptime (NTP based): "); // Uptime desde la primera sincronización NTP
+            Serial.print("[DEBUG] Uptime (NTP based): ");
             Serial.print(elapsedSeconds / 86400); Serial.print("d ");
             Serial.print((elapsedSeconds % 86400) / 3600); Serial.print("h ");
             Serial.print((elapsedSeconds % 3600) / 60);     Serial.println("m");
@@ -1342,76 +1402,54 @@ void handleConnectWifi() {
     }
 }
 
-// Handler para /saveWifiCredentials - Validar, guardar y reiniciar
+void sendFinalInstructionsPage(ESP8266WebServer& server) {
+    // Iniciar el envío con código 200 y tipo de contenido.
+    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    server.sendHeader("Pragma", "no-cache");
+    server.sendHeader("Expires", "-1");
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "text/html", ""); // Envío inicial vacío
+
+    // Envío del contenido HTML exacto que solicitaste, con la sintaxis corregida.
+    server.sendContent(
+        "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
+        "<title>Conectando... - Green Nanny</title>"
+        "<link href=\"https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css\" rel=\"stylesheet\">"
+        "<style>"
+        "body{background-color:#222;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;}"
+        ".container{max-width:500px;}"
+        ".card{background-color:#333;border:1px solid #444;border-radius:10px;padding:30px;}"
+        "</style></head><body><div class=\"container\"><div class=\"card\">"
+        "<p>Haga clic en el bot&oacute;n de abajo para acceder al dashboard.</p>"
+        "<a href=\"http://greennanny.local\" class=\"btn btn-success mt-4 w-100 fs-5\">Ir al Dashboard</a>"
+        "<p class=\"text-muted small mt-2\">Si el bot&oacute;n no funciona, escriba en su navegador: <strong>http://greennanny.local</strong></p>"
+        "</div></div></body></html>"
+    );
+
+    server.sendContent(""); // Finalizar el envío
+}
+
+// Handler para /saveWifiCredentials - Solo inicia el proceso asíncrono
 void handleSaveWifiCredentials() {
-     Serial.println("[HTTP] Solicitud /saveWifiCredentials (POST).");
-     server.sendHeader("Access-Control-Allow-Origin", "*");
-     if (!server.hasArg("plain")) {
-         server.send(400, "text/plain", "Bad Request: Missing request body");
-         return;
-     }
-     String body = server.arg("plain");
-     StaticJsonDocument<256> doc;
-     DeserializationError error = deserializeJson(doc, body);
-
-     if (error) {
-         Serial.print("[ERROR] JSON inválido en /saveWifiCredentials: "); Serial.println(error.c_str());
-         server.send(400, "text/plain", "Bad Request: Invalid JSON format");
-         return;
-     }
-
-     if (!doc.containsKey("ssid") || !doc["ssid"].is<const char*>()) {
-         server.send(400, "text/plain", "Bad Request: Missing or invalid 'ssid'");
-         return;
-     }
-     const char* ssid_c = doc["ssid"];
-     if (strlen(ssid_c) == 0) {
-         server.send(400, "text/plain", "Bad Request: SSID cannot be empty");
-         return;
-     }
-     String ssid = String(ssid_c);
-     String password = doc["password"] | "";
-
-     Serial.print("[ACCION] Validando y guardando credenciales para: '"); Serial.print(ssid); Serial.println("'...");
-
-     // Intentar conectar para validar las credenciales antes de guardar
-     if (WiFi.getMode() != WIFI_STA) {
-         WiFi.mode(WIFI_STA);
-         delay(100);
-     }
-     WiFi.begin(ssid.c_str(), password.c_str());
-     int attempts = 0;
-     while (WiFi.status() != WL_CONNECTED && attempts < 30) { // Esperar ~15s
-         delay(500);
-         Serial.print(".");
-         attempts++;
-     }
-     Serial.println();
-
-     if (WiFi.status() == WL_CONNECTED) {
-         Serial.println("[INFO] Conexión de prueba exitosa. Guardando credenciales...");
-         File file = LittleFS.open("/WifiConfig.txt", "w");
-         if (!file) {
-             Serial.println("[ERROR] No se pudo abrir 'WifiConfig.txt' para escritura.");
-             server.send(500, "application/json", "{\"status\":\"error\", \"message\":\"Cannot save configuration file\"}");
-             return;
-         }
-         file.println(ssid);
-         file.println(password);
-         file.close();
-         Serial.println("[INFO] Credenciales guardadas. Reiniciando el sistema para aplicar...");
-         // Enviar respuesta ANTES de reiniciar
-         server.send(200, "application/json", "{\"status\":\"success\", \"message\":\"Credentials saved. Restarting device...\"}");
-         delay(1000); // Dar tiempo para que la respuesta HTTP se envíe
-         ESP.restart();
-     } else {
-         Serial.println("[ERROR] Falló la conexión de prueba con las nuevas credenciales. No se guardaron.");
-         Serial.print("[DEBUG] Estado WiFi final: "); Serial.println(WiFi.status());
-         WiFi.disconnect(false);
-         // Volver a modo AP para que el usuario pueda intentarlo de nuevo desde la página de config
-         startAPMode();
-         server.send(401, "application/json", "{\"status\":\"failed\", \"message\":\"Connection test failed. Credentials not saved.\"}");
-     }
+    Serial.println("[HTTP] Solicitud /saveWifiCredentials recibida.");
+    
+    if (!server.hasArg("ssid") || server.arg("ssid").length() == 0) {
+        server.send(400, "text/plain", "Error: SSID no puede estar vacío.");
+        return;
+    }
+    
+    // Guardar credenciales en variables globales
+    targetSsid = server.arg("ssid");
+    targetPass = server.arg("password");
+    
+    // Cambiar el estado para que el loop() empiece a enviar la página
+    wifiState = SENDING_INSTRUCTIONS;
+    connectionAttemptStartMillis = millis(); // Registrar la hora de inicio
+    
+    Serial.println("[HTTP] Petición aceptada. Enviando página de instrucciones...");
+    
+    // Enviar la página de instrucciones y terminar la solicitud HTTP.
+    sendFinalInstructionsPage(server);
 }
 
 // Handler para /loadMeasurement - Cargar historial
@@ -1730,7 +1768,6 @@ void handleUpdateStage() {
         server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"No valid parameters provided to update.\"}");
     }
 }
-
 
 // Inicia modo AP (Access Point)
 void startAPMode() {
