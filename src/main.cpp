@@ -1,5 +1,6 @@
 
 #include <ESP8266WiFi.h>
+#include <ESP8266mDNS.h>
 #include <ESP8266WebServer.h>
 #include <DNSServer.h>
 #include <DHT.h>
@@ -47,9 +48,9 @@ String measurements[MAX_JSON_OBJECTS];
 int jsonIndex = 0;
 
 // Configuración de red estática (opcional)
-IPAddress ip(192, 168, 0, 73);
+/*IPAddress ip(192, 168, 0, 73);
 IPAddress gateway(192, 168, 0, 1);
-IPAddress subnet(255, 255, 255, 0);
+IPAddress subnet(255, 255, 255, 0);*/
 
 // Variables de tiempo
 unsigned long startTime = 0; // millis() at boot
@@ -252,20 +253,13 @@ void setup() {
           }
         #endif
     }
-    // Iniciar I2C y RTC - REMOVED
-    // Wire.begin(D6 /* SDA */, D5 /* SCL */);
-    // if (!rtc.begin()) { ... } else { ... } - REMOVED
-
-    // Obtener la hora actual del RTC - REMOVED (Ahora depende de NTP)
-    // DateTime now = rtc.now(); ... - REMOVED
+    
     Serial.println("[INFO] Hora inicial del sistema depende de NTP. Sincronizando...");
 
-    // rtcBootEpoch = now.unixtime(); // REMOVED
     startTime    = millis(); // Guardar millis de inicio
     lastMeasurementTimestamp = 0; // Se actualizará tras la primera sincronización NTP o medición
     Serial.print("[INFO] Hora de inicio del sistema (millis): "); Serial.println(startTime);
-    // Serial.print("[INFO] Hora de inicio del sistema (epoch RTC inicial): "); // REMOVED
-
+    
     // Configurar el pin de la bomba
     setupBomba();
 
@@ -281,9 +275,7 @@ void setup() {
 
     // Cargar intervalo de medición
     loadMeasurementInterval();
-    // Calcular nextMeasureTimestamp DESPUÉS de posible sincronización NTP
-    // Se hará más abajo después del intento de sync
-
+    
     // Cargar etapa manual si existe
     loadManualStage();
 
@@ -300,6 +292,14 @@ void setup() {
          Serial.print("[INFO] RSSI: "); Serial.print(WiFi.RSSI()); Serial.println(" dBm");
          dnsServer.stop(); // Stop DNS server if connected to WiFi
 
+         // *** INICIAR MDNS ***
+         if (MDNS.begin("greennanny")) {
+             Serial.println("[INFO] Servidor mDNS iniciado. Accede en http://greennanny.local");
+             MDNS.addService("http", "tcp", 80);
+         } else {
+             Serial.println("[ERROR] No se pudo iniciar el servidor mDNS.");
+         }
+
          // *** INTENTAR SINCRONIZAR HORA NTP ***
          if (syncNtpTime()) {
              // Hora sincronizada, recalcular próxima medición basado en la hora ACTUAL
@@ -310,18 +310,13 @@ void setup() {
              strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
              Serial.print("[INFO] Hora sistema después de NTP: "); Serial.println(buf);
              unsigned long currentMillis = millis(); // Obtener millis actuales
-             // Ajustar la marca de tiempo de la próxima medición relativa a la hora actual.
-             // Calcular cuándo debería ser la próxima medición basada en el intervalo y la hora actual.
-             // Ejemplo simple: la próxima será 'interval' horas después de AHORA (en millis).
              nextMeasureTimestamp = currentMillis + (measurementInterval * 3600000UL);
              Serial.print("[INFO] Próxima medición ajustada post-NTP para millis ~: "); Serial.println(nextMeasureTimestamp);
          } else {
              // No sincronizó, usar la hora del sistema no sincronizada (cercana a epoch 0)
              Serial.println("[WARN] No se pudo sincronizar con NTP. La hora del sistema NO es correcta.");
-             // Calcular próximo intervalo basado en millis() desde el inicio
              nextMeasureTimestamp = startTime + (measurementInterval * 3600000UL);
              Serial.print("[INFO] Próxima medición programada (sin NTP sync) alrededor de millis: "); Serial.println(nextMeasureTimestamp);
-             // El tiempo transcurrido (elapsedDays) será incorrecto hasta que NTP sincronice.
          }
          lastNtpSyncAttempt = millis(); // Marcar el último intento (exitoso o no)
     }
@@ -343,6 +338,7 @@ void loop() {
 
     // Manejar clientes HTTP
     server.handleClient();
+    MDNS.update(); // <-- AÑADIDO
 
     // Procesar solicitudes DNS si está en modo AP
     if (WiFi.getMode() == WIFI_AP) {
@@ -666,6 +662,7 @@ void saveMeasurementInterval(int interval) {
 }
 
 // Carga credenciales WiFi desde archivo
+// Carga credenciales WiFi desde archivo
 void loadWifiCredentials() {
     File file = LittleFS.open("/WifiConfig.txt", "r");
     if (!file || !file.available()) {
@@ -684,10 +681,7 @@ void loadWifiCredentials() {
     }
     Serial.print("[ACCION] Intentando conectar a WiFi guardada: '"); Serial.print(ssid); Serial.println("'...");
     WiFi.mode(WIFI_STA);
-    bool useStaticIP = true; // Poner a true para intentar IP estática (definida globalmente)
-    if (useStaticIP && !WiFi.config(ip, gateway, subnet)) {
-        Serial.println("[WARN] Falló aplicación IP estática.");
-    }
+    // <-- CAMBIO: Se elimina el bloque 'if (useStaticIP && !WiFi.config(...))'
     WiFi.begin(ssid.c_str(), password.c_str());
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 20) { // 10 segundos de espera
@@ -1319,6 +1313,15 @@ void handleConnectWifi() {
         Serial.print("[INFO] IP: "); Serial.println(WiFi.localIP());
         dnsServer.stop(); // Detener DNS si estaba en modo AP
         server.send(200, "application/json", "{\"status\":\"success\", \"ip\":\"" + WiFi.localIP().toString() + "\"}");
+        
+        // *** INICIAR MDNS ***
+        if (MDNS.begin("greennanny")) {
+            Serial.println("[INFO] Servidor mDNS iniciado tras conexión manual. Accede en http://greennanny.local");
+            MDNS.addService("http", "tcp", 80);
+        } else {
+            Serial.println("[ERROR] No se pudo iniciar el servidor mDNS.");
+        }
+
         // Intentar sincronizar NTP ahora que hay conexión
         syncNtpTime(); // Intentar sincronizar ahora
         lastNtpSyncAttempt = millis(); // Resetear timer de sync NTP
@@ -1334,8 +1337,6 @@ void handleConnectWifi() {
             startAPMode();
         } else {
              Serial.println("[INFO] Hay credenciales guardadas, permanecerá en modo STA para reintentar al reiniciar.");
-             // Opcionalmente, podrías forzar modo AP aquí si prefieres
-             // startAPMode();
         }
         server.send(401, "application/json", "{\"status\":\"failed\", \"message\":\"Connection failed\"}");
     }
