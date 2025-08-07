@@ -348,6 +348,10 @@ void loop() {
     server.handleClient();
     MDNS.update();
 
+    // Refresh timestamp after serving requests to prevent immediate
+    // auto-off when the pump is activated from the dashboard.
+    currentMillis = millis();
+
     // --- MÁQUINA DE ESTADOS PARA CONEXIÓN WIFI ASÍNCRONA (VERSIÓN FINAL) ---
     if (wifiState == SENDING_INSTRUCTIONS) {
         // Este estado da un "período de gracia" para que el servidor web termine de enviar la página
@@ -418,7 +422,15 @@ void loop() {
     // Conteo de segundos para debug si la bomba está encendida con auto-off
     if (pumpActivated && pumpAutoOff && (currentMillis - lastSecondPrint >= 1000)) {
         pumpSecondsCount++;
-        Serial.print("[DEBUG PUMP] Riego en curso, segundo: "); Serial.println(pumpSecondsCount);
+        int totalSeconds = pumpDurationMs / 1000;
+        int remaining = totalSeconds - pumpSecondsCount;
+        Serial.print("[DEBUG PUMP] Riego en curso, segundo ");
+        Serial.print(pumpSecondsCount);
+        Serial.print("/");
+        Serial.print(totalSeconds);
+        Serial.print(" (restan ");
+        Serial.print(remaining);
+        Serial.println("s)");
         lastSecondPrint = currentMillis;
     }
 
