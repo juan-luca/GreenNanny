@@ -59,7 +59,7 @@ String targetSsid = "";
 String targetPass = "";
 unsigned long connectionAttemptStartMillis = 0;
 
-
+const char* HOSTNAME = "greennanny2";
 // Variables de tiempo
 unsigned long startTime = 0; // millis() at boot
 unsigned long lastDebugPrint = 0;
@@ -301,7 +301,7 @@ void setup() {
          dnsServer.stop(); // Stop DNS server if connected to WiFi
 
          // *** INICIAR MDNS ***
-         if (MDNS.begin("greennanny")) {
+         if (MDNS.begin("greennanny2")) {
              Serial.println("[INFO] Servidor mDNS iniciado. Accede en http://greennanny.local");
              MDNS.addService("http", "tcp", 80);
          } else {
@@ -525,53 +525,67 @@ void setupBomba() {
 }
 
 // Obtiene la humedad (real o simulada)
+// MODIFIED: Non-blocking sensor read
 float getHumidity() {
-    if (simulateSensors) {
-        simulatedHumidity += (random(-20, 21) / 10.0); // +/- 2.0
-        if (simulatedHumidity < 30) simulatedHumidity = 30 + (random(0, 50) / 10.0);
-        if (simulatedHumidity > 95) simulatedHumidity = 95 - (random(0, 50) / 10.0);
-        Serial.print("[SIM] Humedad simulada: "); Serial.println(simulatedHumidity); // Debug simulación
-        return simulatedHumidity;
-    } else {
-        float h = dht.readHumidity();
-        int retry = 0;
-        while (isnan(h) && retry < 3) {
-             Serial.println("[WARN] Falla lectura de humedad, reintentando...");
-             delay(500);
-             h = dht.readHumidity();
-             retry++;
-        }
-        if (isnan(h)) {
-             Serial.println("[ERROR] Falla lectura de humedad después de reintentos.");
-             return -1.0; // Error indicator
-        }
-        return h;
-    }
-}
+    static unsigned long lastReadAttempt = 0;
+    static int retryCount = 0;
+    static float lastValidHumidity = -1.0; // Cache the last known good value
 
-// Obtiene la temperatura (real o simulada)
-float getTemperature() {
-    if (simulateSensors) {
-        simulatedTemperature += (random(-10, 11) / 10.0); // +/- 1.0
-        if (simulatedTemperature < 15) simulatedTemperature = 15 + (random(0, 20) / 10.0);
-        if (simulatedTemperature > 35) simulatedTemperature = 35 - (random(0, 20) / 10.0);
-        Serial.print("[SIM] Temperatura simulada: "); Serial.println(simulatedTemperature); // Debug simulación
-        return simulatedTemperature;
-    } else {
-        float t = dht.readTemperature();
-        int retry = 0;
-        while (isnan(t) && retry < 3) {
-             Serial.println("[WARN] Falla lectura de temperatura, reintentando...");
-             delay(500);
-             t = dht.readTemperature();
-             retry++;
+    unsigned long currentMillis = millis();
+
+    // Allow a new read attempt only after a short interval (e.g., 2 seconds)
+    if (currentMillis - lastReadAttempt > 2000) {
+        float h = dht.readHumidity();
+
+        if (!isnan(h)) {
+            // Success! Reset retries and update cache.
+            lastReadAttempt = currentMillis;
+            retryCount = 0;
+            lastValidHumidity = h;
+            return h;
+        } else {
+            // Failure. Increment retry count for the next attempt.
+            Serial.println("[WARN] Falla lectura de humedad.");
+            lastReadAttempt = currentMillis; // Mark time of this failed attempt
+            retryCount++;
+            if (retryCount >= 3) {
+                 Serial.println("[ERROR] Falla lectura de humedad después de 3 intentos. Devolviendo último valor válido o error.");
+                 return lastValidHumidity; // Return the last good value, or -1.0 if none exists
+            }
         }
-        if (isnan(t)) {
-             Serial.println("[ERROR] Falla lectura de temperatura después de reintentos.");
-             return -99.0; // Error indicator
-        }
-        return t;
     }
+    // If waiting for retry interval or if retries are in progress, return last known value.
+    return lastValidHumidity;
+}
+// MODIFIED: Non-blocking sensor read
+float getTemperature() {
+    static unsigned long lastReadAttempt = 0;
+    static int retryCount = 0;
+    static float lastValidTemperature = -99.0; // Cache the last known good value
+
+    unsigned long currentMillis = millis();
+
+    if (currentMillis - lastReadAttempt > 2000) {
+        float t = dht.readTemperature();
+
+        if (!isnan(t)) {
+            // Success!
+            lastReadAttempt = currentMillis;
+            retryCount = 0;
+            lastValidTemperature = t;
+            return t;
+        } else {
+            // Failure.
+             Serial.println("[WARN] Falla lectura de temperatura.");
+            lastReadAttempt = currentMillis;
+            retryCount++;
+            if (retryCount >= 3) {
+                 Serial.println("[ERROR] Falla lectura de temperatura después de 3 intentos. Devolviendo último valor válido o error.");
+                return lastValidTemperature;
+            }
+        }
+    }
+    return lastValidTemperature;
 }
 
 // Calcula el VPD (Déficit de Presión de Vapor) en kPa
@@ -1375,7 +1389,7 @@ void handleConnectWifi() {
         server.send(200, "application/json", "{\"status\":\"success\", \"ip\":\"" + WiFi.localIP().toString() + "\"}");
         
         // *** INICIAR MDNS ***
-        if (MDNS.begin("greennanny")) {
+        if (MDNS.begin("greennanny2")) {
             Serial.println("[INFO] Servidor mDNS iniciado tras conexión manual. Accede en http://greennanny.local");
             MDNS.addService("http", "tcp", 80);
         } else {
@@ -1539,53 +1553,49 @@ void handleMeasurementInterval() {
     }
 }
 
-// Handler para /controlPump - Control manual bomba
+
+// MODIFIED: Switched from JSON body to URL parameters for robustness
 void handlePumpControl() {
     Serial.println("[HTTP] Solicitud /controlPump (POST).");
-     server.sendHeader("Access-Control-Allow-Origin", "*");
-     if (!server.hasArg("plain")) {
-         server.send(400, "text/plain", "Bad Request: Missing request body");
-         return;
-     }
-     StaticJsonDocument<128> doc; // Suficiente para action y duration
-     DeserializationError error = deserializeJson(doc, server.arg("plain"));
-     if (error) {
-         server.send(400, "text/plain", "Bad Request: Invalid JSON");
-         return;
-     }
-     if (!doc.containsKey("action") || !doc["action"].is<String>()) {
-         server.send(400, "text/plain", "Bad Request: Missing or invalid 'action' field (must be string 'on' or 'off')");
-         return;
-     }
-     String action = doc["action"].as<String>();
+    server.sendHeader("Access-Control-Allow-Origin", "*");
 
-     if (action.equalsIgnoreCase("on")) {
-         // Acción ON requiere duración
-         if (!doc.containsKey("duration") || !doc["duration"].is<int>()) {
-             server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Missing or invalid 'duration' field for action 'on' (must be integer seconds)\"}");
-             return;
-         }
-         int durationSec = doc["duration"];
-         // Validar duración (ej: 1 segundo a 10 minutos)
-         if (durationSec <= 0 || durationSec > 600) {
-             server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid duration. Must be between 1 and 600 seconds.\"}");
-             return;
-         }
-         Serial.print("[ACCION] Encendiendo bomba (manual HTTP) por "); Serial.print(durationSec); Serial.println("s.");
-         activatePump(durationSec * 1000UL); // Llama a la función que activa con auto-off
-         server.send(200, "application/json", "{\"status\":\"success\", \"pumpStatus\":\"on\", \"duration\":" + String(durationSec) + "}");
-     } else if (action.equalsIgnoreCase("off")) {
-         // Acción OFF no necesita duración
-         Serial.println("[ACCION] Apagando bomba (manual HTTP).");
-         deactivatePump(); // Llama a la función que desactiva
-         server.send(200, "application/json", "{\"status\":\"success\", \"pumpStatus\":\"off\"}");
-     } else {
-         // Acción desconocida
-         Serial.print("[ERROR] Acción de bomba inválida recibida: "); Serial.println(action);
-         server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid action specified. Use 'on' or 'off'.\"}");
-     }
+    // Check if the required 'action' argument exists in the URL
+    if (!server.hasArg("action")) {
+        server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Missing 'action' parameter\"}");
+        return;
+    }
+    String action = server.arg("action");
+
+    if (action.equalsIgnoreCase("on")) {
+        // For 'on' action, the 'duration' argument is also required
+        if (!server.hasArg("duration")) {
+            server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Missing 'duration' parameter for action 'on'\"}");
+            return;
+        }
+
+        int durationSec = server.arg("duration").toInt();
+
+        // Validate the converted duration
+        if (durationSec <= 0 || durationSec > 600) {
+            Serial.print("[ERROR] Duración de bomba inválida recibida: "); Serial.println(durationSec);
+            server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid duration. Must be between 1 and 600 seconds.\"}");
+            return;
+        }
+
+        Serial.print("[ACCION] Encendiendo bomba (manual HTTP) por "); Serial.print(durationSec); Serial.println("s.");
+        activatePump(durationSec * 1000UL);
+        server.send(200, "application/json", "{\"status\":\"success\", \"pumpStatus\":\"on\", \"duration\":" + String(durationSec) + "}");
+
+    } else if (action.equalsIgnoreCase("off")) {
+        Serial.println("[ACCION] Apagando bomba (manual HTTP).");
+        deactivatePump();
+        server.send(200, "application/json", "{\"status\":\"success\", \"pumpStatus\":\"off\"}");
+
+    } else {
+        Serial.print("[ERROR] Acción de bomba inválida recibida: "); Serial.println(action);
+        server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid action specified. Use 'on' or 'off'.\"}");
+    }
 }
-
 // Handler para /setManualStage - Establecer etapa manual
 void handleSetManualStage() {
     Serial.println("[HTTP] Solicitud /setManualStage (POST).");

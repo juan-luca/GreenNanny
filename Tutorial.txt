@@ -1,0 +1,30 @@
+🌿 Cómo Conectar tu Green Nanny
+Seguí estas instrucciones para configurar la conexión WiFi de tu dispositivo por primera vez.
+
+Paso 1: Conectate al Dispositivo
+Primero, enchufá tu dispositivo Green Nanny a la corriente. Esperá unos segundos a que se inicie. Luego, andá a la configuración de redes WiFi en tu computadora o celular y buscá una nueva red.
+
+Red: GreenNanny-Setup
+
+Contraseña: password123
+
+Paso 2: Configurá tu Red WiFi
+Una vez que te conectes a la red "GreenNanny-Setup", se debería abrir automáticamente en tu navegador un portal de configuración WiFi.
+
+En el portal, seleccioná el nombre de la red WiFi de tu casa de la lista.
+
+Ingresá la contraseña de la red de tu casa.
+
+Hacé clic en "Guardar y Conectar".
+
+Paso 3: Accedé al Dashboard
+Ahora, el dispositivo se reiniciará e intentará conectarse a la red que configuraste.
+
+Si la conexión es exitosa: La página te mostrará un mensaje de éxito y un enlace al dashboard. Ya podés acceder a tu Green Nanny en cualquier momento desde: http://greennanny.local
+
+Si la conexión falla (error de contraseña): La página de conexión fallará o no mostrará un mensaje de éxito. En este caso, desenchufá tu Green Nanny, volvelo a enchufar y repetí las instrucciones desde el Paso 1 para reintentar.
+
+Requisitos Importantes ⚠️
+Misma Red: Para poder entrar al dashboard en http://greennanny.local, tu computadora o celular debe estar conectado a la misma red WiFi que configuraste en el Green Nanny.
+
+Frecuencia 2.4GHz: Asegurate de que la red WiFi de tu casa que seleccionaste esté en la frecuencia de 2.4GHz, ya que el dispositivo no es compatible con redes de 5GHz.

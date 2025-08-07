@@ -1163,27 +1163,41 @@ function setupEventListeners() {
 
     // --- Buttons ---
     // Activate Pump Button
-    El.activatePumpBtn?.addEventListener('click', async () => {
-        const durationStr = prompt('Enter pump activation duration in SECONDS (1-600):', '30');
-        if (durationStr === null) return; // User cancelled prompt
-        const duration = parseInt(durationStr);
-        // Validate duration input
-        if (isNaN(duration) || duration <= 0 || duration > 600) {
-             showToast('Invalid duration entered (must be 1-600 seconds).', 'warning');
-             return;
+    // MODIFIED: Switched to URL params to avoid JSON parsing issues on device
+El.activatePumpBtn?.addEventListener('click', async () => {
+    const durationStr = prompt('Enter pump activation duration in SECONDS (1-600):', '30');
+    if (durationStr === null) return; // User cancelled prompt
+    const duration = parseInt(durationStr);
+
+    if (isNaN(duration) || duration <= 0 || duration > 600) {
+        showToast('Invalid duration entered (must be 1-600 seconds).', 'warning');
+        return;
+    }
+
+    setLoadingState(El.activatePumpBtn, true, "Activating...");
+    try {
+        // Construct URL with parameters instead of sending a JSON body
+        const url = `${BASE_URL}/controlPump?action=on&duration=${duration}`;
+
+        const response = await fetch(url, { method: 'POST' });
+
+        if (!response.ok) {
+            // Try to get error message from response body
+            const errorText = await response.text();
+            throw new Error(`Command failed: ${response.status} ${errorText}`);
         }
-        setLoadingState(El.activatePumpBtn, true, "Activating...");
-        try {
-             await postData('/controlPump', { action: 'on', duration: duration });
-             showToast(`Pump activated for ${duration} seconds.`, 'success');
-             announceSRStatus(`Pump activated for ${duration} seconds.`);
-             await updateUI(); // Refresh UI to show pump ON state and disable button
-         } catch (error) {
-             // Error handled by postData, refresh UI anyway to reflect actual state
-             await updateUI();
-         }
-        // No 'finally' block needed for loader state here, as updateUI handles button state based on actual pump status
-    });
+
+        showToast(`Pump activated for ${duration} seconds.`, 'success');
+        announceSRStatus(`Pump activated for ${duration} seconds.`);
+        await updateUI(); // Refresh UI to show pump ON state
+
+    } catch (error) {
+        console.error("Error activating pump:", error);
+        showToast(error.message, 'error');
+        await updateUI(); // Refresh UI to reflect actual device state even on error
+    }
+    // The loader state is handled by updateUI, which disables the button based on pump status
+});
 
     // Deactivate Pump Button
     El.deactivatePumpBtn?.addEventListener('click', async () => {
