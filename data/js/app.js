@@ -140,6 +140,10 @@ const El = {
     fanHumThreshold: document.getElementById('fanHumThreshold'),
     extractorTempThreshold: document.getElementById('extractorTempThreshold'),
     extractorHumThreshold: document.getElementById('extractorHumThreshold'),
+    // Test Mode Controls (NEW)
+    toggleTestModeBtn: document.getElementById('toggleTestMode'),
+    testModeButtonText: document.getElementById('testModeButtonText'),
+    testModeIndicator: document.getElementById('testModeIndicator'),
     // Global & Footer
     toastContainer: document.getElementById('toastContainer'),
     globalLoader: document.getElementById('globalLoader'),
@@ -782,6 +786,31 @@ function updateExtractorStatusIndicator(isOn) {
     if(El.deactivateExtractorBtn) El.deactivateExtractorBtn.disabled = !isOn;
 }
 
+function updateTestModeIndicator(isEnabled) {
+    if (!El.testModeIndicator) return;
+    if (isEnabled) {
+        El.testModeIndicator.classList.remove('d-none');
+    } else {
+        El.testModeIndicator.classList.add('d-none');
+    }
+    
+    // Update button text
+    if (El.testModeButtonText) {
+        El.testModeButtonText.textContent = isEnabled ? 'Disable Test Mode' : 'Enable Test Mode';
+    }
+    
+    // Update button style
+    if (El.toggleTestModeBtn) {
+        if (isEnabled) {
+            El.toggleTestModeBtn.classList.remove('btn-outline-warning');
+            El.toggleTestModeBtn.classList.add('btn-warning', 'text-dark');
+        } else {
+            El.toggleTestModeBtn.classList.remove('btn-warning', 'text-dark');
+            El.toggleTestModeBtn.classList.add('btn-outline-warning');
+        }
+    }
+}
+
 function updateWiFiStatusIndicator(rssi) {
      // Ensure both the outer wrapper and inner content elements exist
      if (!El.wifiStatusWrapper || !El.wifiStatusContent) {
@@ -893,6 +922,7 @@ async function updateUI() {
             updatePumpStatusIndicator(coreData.pumpStatus ?? false);
             updateFanStatusIndicator(coreData.fanStatus ?? false);
             updateExtractorStatusIndicator(coreData.extractorStatus ?? false);
+            updateTestModeIndicator(coreData.testModeEnabled ?? false);
             updateWiFiStatusIndicator(coreData.wifiRSSI);
 
             // Update Device Name/IP display
@@ -954,11 +984,22 @@ async function updateUI() {
                  const humT = m.humidity != null ? `${m.humidity.toFixed(1)}%` : 'N/A';
                  // Add flash class only to the very first entry if it's new
                  const fl = (i === 0 && isNewData) ? ' new-entry-flash' : '';
+                 
+                 // Build event string for special events
+                 let eventStr = '';
+                 if (m.event) {
+                     // This is an event log entry (fan/extractor activation)
+                     eventStr = `<span class="data-point event-badge"><i class="fas fa-bolt" aria-hidden="true"></i>${m.event}</span>`;
+                 }
+                 
                  return `<div class="measurement-history-entry${fl}" data-timestamp="${ts}">
                             <span class="timestamp" data-epoch-ms="${ts}">${dispT}</span>
-                            <span class="data-point"><i class="fas fa-thermometer-half" aria-hidden="true"></i>${tempT}</span>
-                            <span class="data-point"><i class="fas fa-tint" aria-hidden="true"></i>${humT}</span>
+                            ${m.temperature != null ? `<span class="data-point"><i class="fas fa-thermometer-half" aria-hidden="true"></i>${tempT}</span>` : ''}
+                            ${m.humidity != null ? `<span class="data-point"><i class="fas fa-tint" aria-hidden="true"></i>${humT}</span>` : ''}
                             ${m.pumpActivated ? '<span class="data-point"><i class="fas fa-play-circle" aria-hidden="true"></i>Pump</span>' : ''}
+                            ${m.fanActivated ? '<span class="data-point"><i class="fas fa-fan" aria-hidden="true"></i>Fan</span>' : ''}
+                            ${m.extractorActivated ? '<span class="data-point"><i class="fas fa-wind" aria-hidden="true"></i>Extractor</span>' : ''}
+                            ${eventStr}
                             ${m.stage ? `<span class="data-point"><i class="fas fa-seedling" aria-hidden="true"></i>${m.stage}</span>` : ''}
                         </div>`;
              }).join('') : `<div class='measurement-history-entry empty-indicator'>No history recorded.</div>`;
@@ -1493,6 +1534,24 @@ El.activatePumpBtn?.addEventListener('click', async () => {
             /* Error handled by postData */
         }
         finally { setLoadingState(button, false); }
+    });
+
+    // --- Test Mode Toggle Button (NEW) ---
+    El.toggleTestModeBtn?.addEventListener('click', async () => {
+        setLoadingState(El.toggleTestModeBtn, true, "Processing...");
+        try {
+            const response = await fetch(`${BASE_URL}/testMode`, { method: 'POST' });
+            if (!response.ok) throw new Error(`Command failed: ${response.status}`);
+            const result = await response.json();
+            const isEnabled = result.testModeEnabled;
+            showToast(result.message || (isEnabled ? 'Test mode activated' : 'Test mode deactivated'), isEnabled ? 'warning' : 'success');
+            announceSRStatus(isEnabled ? 'Test mode enabled. Simulated values active.' : 'Test mode disabled. Real sensor readings resumed.');
+            await updateUI();
+        } catch (error) {
+            console.error("Error toggling test mode:", error);
+            showToast(error.message, 'error');
+            await updateUI();
+        }
     });
 
     // Refresh Stage Info Button (Stage Control Card)

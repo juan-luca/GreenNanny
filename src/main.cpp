@@ -85,6 +85,11 @@ bool simulateSensors = false; // CAMBIAR A false PARA USO REAL
 float simulatedHumidity = 55.0;
 float simulatedTemperature = 25.0;
 
+// Modo test para simular diferentes condiciones sin sensor
+bool testModeEnabled = false;
+unsigned long testModeStartTime = 0;
+const unsigned long testCycleDuration = 60000; // 60 segundos por ciclo completo
+
 // Inicialización del sensor DHT
 DHT dht(DHTPIN, DHTTYPE);
 
@@ -184,6 +189,10 @@ void loadThresholds();         // Load thresholds from file
 void saveThresholds();         // Save thresholds to file
 void handleGetThresholds();    // API endpoint to get thresholds
 void handleSetThresholds();    // API endpoint to set thresholds
+// Test Mode
+void handleTestMode();         // API endpoint to toggle test mode
+void updateTestModeSimulation(); // Update simulated values in test mode
+void logEvent(const String& eventType, const String& details); // Log events to history
 // Stage Control
 int getCurrentStageIndex(unsigned long daysElapsed); // Accepts daysElapsed as arg
 void loadManualStage();
@@ -200,6 +209,7 @@ String loadMeasurements();
 void saveMeasurement(const String& jsonString);
 void saveMeasurementFile(const String& allMeasurementsString);
 void appendMeasurementToFile(const String& jsonString);
+void logEvent(const String& eventType, const String& details); // NEW: Log events to history
 int parseData(String input, String output[]); // Parses stored measurements string
 String arrayToString(String array[], size_t arraySize); // Converts array back to string for saving
 void formatMeasurementsToString(String& formattedString); // Formats for JSON array response
@@ -554,6 +564,11 @@ void loop() {
     // --- Control automático de ventilador y turbina basado en umbrales ---
     controlFanAndExtractor();
 
+    // --- Actualización del modo test ---
+    if (testModeEnabled) {
+        updateTestModeSimulation();
+    }
+
     // --- Sincronización NTP Periódica ---
     if (WiFi.status() == WL_CONNECTED && (!ntpTimeSynchronized || (currentMillis - lastNtpSyncAttempt >= ntpSyncInterval))) {
         if (!ntpTimeSynchronized) {
@@ -660,6 +675,11 @@ void setupFanAndExtractor() {
 // Obtiene la humedad (real o simulada)
 // MODIFIED: Non-blocking sensor read
 float getHumidity() {
+    // Si el modo test está activo, retornar valor simulado
+    if (testModeEnabled) {
+        return simulatedHumidity;
+    }
+    
     // Lectura simple con un reintento corto para evitar NaN del DHT11
     float h = dht.readHumidity();
     if (isnan(h)) {
@@ -674,6 +694,11 @@ float getHumidity() {
 }
 // MODIFIED: Non-blocking sensor read
 float getTemperature() {
+    // Si el modo test está activo, retornar valor simulado
+    if (testModeEnabled) {
+        return simulatedTemperature;
+    }
+    
     float t = dht.readTemperature();
     if (isnan(t)) {
         delay(100);
@@ -767,6 +792,12 @@ void activateFan() {
     Serial.println("[ACCION] Activando ventilador.");
     digitalWrite(FAN_PIN, HIGH);
     fanActivated = true;
+    
+    // Registrar evento en historial
+    float temp = getTemperature();
+    float hum = getHumidity();
+    String details = "Temp: " + String(temp, 1) + "°C, Hum: " + String(hum, 1) + "%";
+    logEvent("FAN_ON", details);
 }
 
 // Desactiva el ventilador
@@ -775,6 +806,9 @@ void deactivateFan() {
     Serial.println("[ACCION] Desactivando ventilador.");
     digitalWrite(FAN_PIN, LOW);
     fanActivated = false;
+    
+    // Registrar evento en historial
+    logEvent("FAN_OFF", "Ventilador desactivado");
 }
 
 // Activa la turbina de extracción
@@ -783,6 +817,12 @@ void activateExtractor() {
     Serial.println("[ACCION] Activando turbina de extracción.");
     digitalWrite(EXTRACTOR_PIN, HIGH);
     extractorActivated = true;
+    
+    // Registrar evento en historial
+    float temp = getTemperature();
+    float hum = getHumidity();
+    String details = "Temp: " + String(temp, 1) + "°C, Hum: " + String(hum, 1) + "%";
+    logEvent("EXTRACTOR_ON", details);
 }
 
 // Desactiva la turbina de extracción
@@ -791,6 +831,9 @@ void deactivateExtractor() {
     Serial.println("[ACCION] Desactivando turbina de extracción.");
     digitalWrite(EXTRACTOR_PIN, LOW);
     extractorActivated = false;
+    
+    // Registrar evento en historial
+    logEvent("EXTRACTOR_OFF", "Turbina desactivada");
 }
 
 // Control automático del ventilador y turbina basado en umbrales
@@ -1237,6 +1280,36 @@ void formatMeasurementsToString(String& formattedString) {
     formattedString += "]"; // Cerrar array JSON
 }
 
+// Registra un evento en el historial (activación de ventilador/extractor, etc.)
+void logEvent(const String& eventType, const String& details) {
+    Serial.print("[EVENT] ");
+    Serial.print(eventType);
+    Serial.print(": ");
+    Serial.println(details);
+    
+    // Obtener timestamp actual
+    time_t now_t = time(nullptr);
+    bool timeValid = ntpTimeSynchronized && (now_t >= ntpBootEpoch);
+    uint64_t epochMs = timeValid ? ((uint64_t)now_t * 1000ULL) : 0ULL;
+    
+    // Crear JSON del evento
+    StaticJsonDocument<256> doc;
+    doc["eventType"] = eventType;
+    doc["details"] = details;
+    doc["epoch_ms"] = epochMs;
+    doc["testMode"] = testModeEnabled;
+    
+    // Agregar valores actuales de sensores para contexto
+    float temp = getTemperature();
+    float hum = getHumidity();
+    if (temp > -90.0) doc["temperature"] = serialized(String(temp, 1));
+    if (hum >= 0.0) doc["humidity"] = serialized(String(hum, 1));
+    
+    String eventString;
+    serializeJson(doc, eventString);
+    saveMeasurement(eventString);
+}
+
 
 // NEW: Load custom stage configuration from LittleFS
 void loadStagesConfig() {
@@ -1455,6 +1528,9 @@ void controlIndependiente() {
         doc["humidity"]    = nullptr;
     }
     doc["pumpActivated"] = pumpActivated; // Estado REAL de la bomba al momento de guardar
+    doc["fanActivated"] = fanActivated;   // Estado del ventilador
+    doc["extractorActivated"] = extractorActivated; // Estado del extractor
+    doc["testMode"] = testModeEnabled;    // Indicar si está en modo test
     doc["stage"]         = currentStage.name; // Nombre de la etapa actual
     doc["epoch_ms"]      = epochMs; // Timestamp en milisegundos UTC (será 0 si NTP no ha sincronizado)
     String measurementString;
@@ -1541,6 +1617,15 @@ void handleData() {
     // Estado Ventilador y Turbina
     doc["fanStatus"] = fanActivated;
     doc["extractorStatus"] = extractorActivated;
+
+    // Modo Test
+    doc["testModeEnabled"] = testModeEnabled;
+    if (testModeEnabled) {
+        unsigned long elapsedCycle = millis() - testModeStartTime;
+        unsigned long cyclePos = elapsedCycle % testCycleDuration;
+        float cycleProgress = (float)cyclePos / (float)testCycleDuration * 100.0;
+        doc["testCycleProgress"] = serialized(String(cycleProgress, 1));
+    }
 
     // Tiempo
     doc["elapsedTime"] = elapsedSeconds; // Tiempo transcurrido desde primer sync NTP (segundos)
@@ -2020,6 +2105,110 @@ void handleSetThresholds() {
     }
 }
 
+// ============================================
+// MODO TEST - Simulación de condiciones
+// ============================================
+
+// Actualiza los valores simulados en modo test
+void updateTestModeSimulation() {
+    if (!testModeEnabled) return;
+    
+    unsigned long elapsedMs = millis() - testModeStartTime;
+    unsigned long cyclePosition = elapsedMs % testCycleDuration;
+    float progress = (float)cyclePosition / (float)testCycleDuration; // 0.0 a 1.0
+    
+    // Simulación cíclica de temperatura: 20°C -> 35°C -> 20°C
+    // Ciclo: 0-25% sube, 25-50% alta, 50-75% baja, 75-100% baja
+    if (progress < 0.33) {
+        // Subida: 20°C a 35°C
+        simulatedTemperature = 20.0 + (progress / 0.33) * 15.0;
+    } else if (progress < 0.66) {
+        // Mantenimiento alto: 30-35°C
+        simulatedTemperature = 30.0 + ((progress - 0.33) / 0.33) * 5.0;
+    } else {
+        // Bajada: 35°C a 20°C
+        simulatedTemperature = 35.0 - ((progress - 0.66) / 0.34) * 15.0;
+    }
+    
+    // Simulación de humedad: 40% -> 90% -> 40%
+    if (progress < 0.5) {
+        // Subida: 40% a 90%
+        simulatedHumidity = 40.0 + (progress / 0.5) * 50.0;
+    } else {
+        // Bajada: 90% a 40%
+        simulatedHumidity = 90.0 - ((progress - 0.5) / 0.5) * 50.0;
+    }
+    
+    // Log cada 5 segundos
+    static unsigned long lastTestLog = 0;
+    if (millis() - lastTestLog > 5000) {
+        Serial.print("[TEST MODE] Ciclo: ");
+        Serial.print(progress * 100);
+        Serial.print("% | Temp: ");
+        Serial.print(simulatedTemperature);
+        Serial.print("°C | Hum: ");
+        Serial.print(simulatedHumidity);
+        Serial.println("%");
+        lastTestLog = millis();
+    }
+}
+
+// Handler para /testMode - Activar/desactivar modo test
+void handleTestMode() {
+    Serial.println("[HTTP] Solicitud /testMode (GET/POST).");
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    
+    if (server.method() == HTTP_GET) {
+        // Retornar estado actual
+        StaticJsonDocument<128> doc;
+        doc["testModeEnabled"] = testModeEnabled;
+        doc["currentTemp"] = simulatedTemperature;
+        doc["currentHum"] = simulatedHumidity;
+        
+        String response;
+        serializeJson(doc, response);
+        server.send(200, "application/json", response);
+        return;
+    }
+    
+    if (server.method() == HTTP_POST) {
+        // Toggle o establecer estado
+        bool enable = true;
+        
+        if (server.hasArg("enable")) {
+            enable = (server.arg("enable") == "true" || server.arg("enable") == "1");
+        } else {
+            // Toggle
+            enable = !testModeEnabled;
+        }
+        
+        testModeEnabled = enable;
+        
+        if (testModeEnabled) {
+            testModeStartTime = millis();
+            simulatedTemperature = 20.0;
+            simulatedHumidity = 40.0;
+            Serial.println("[TEST MODE] *** MODO TEST ACTIVADO ***");
+            Serial.println("[TEST MODE] El sistema usará valores simulados que varían cíclicamente");
+        } else {
+            Serial.println("[TEST MODE] *** MODO TEST DESACTIVADO ***");
+            Serial.println("[TEST MODE] El sistema volverá a usar el sensor DHT11 real");
+        }
+        
+        StaticJsonDocument<128> doc;
+        doc["status"] = "success";
+        doc["testModeEnabled"] = testModeEnabled;
+        doc["message"] = testModeEnabled ? "Test mode activated" : "Test mode deactivated";
+        
+        String response;
+        serializeJson(doc, response);
+        server.send(200, "application/json", response);
+        return;
+    }
+    
+    server.send(405, "text/plain", "Method Not Allowed");
+}
+
 // Handler para /setManualStage - Establecer etapa manual
 void handleSetManualStage() {
     Serial.println("[HTTP] Solicitud /setManualStage (POST).");
@@ -2255,6 +2444,7 @@ void setupServer() {
     server.on("/controlExtractor", HTTP_POST, handleExtractorControl);   // Encender/apagar turbina manualmente
     server.on("/setThresholds", HTTP_POST, handleSetThresholds);         // Configurar umbrales de temp/humedad
     server.on("/getThresholds", HTTP_GET, handleGetThresholds);          // Obtener umbrales actuales
+    server.on("/testMode", HTTP_ANY, handleTestMode);                    // Activar/desactivar modo test (GET/POST)
     server.on("/setManualStage", HTTP_POST, handleSetManualStage);       // Activar control manual de etapa
     server.on("/resetManualStage", HTTP_POST, handleResetManualStage);   // Desactivar control manual
     server.on("/updateStage", HTTP_POST, handleUpdateStage);             // Modificar parámetros de una etapa

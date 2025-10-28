@@ -560,6 +560,11 @@
              0% { background-color: rgba(var(--bs-primary-rgb), 0.2); }
              100% { background-color: transparent; }
          }
+         
+         @keyframes pulse {
+             0%, 100% { opacity: 1; transform: scale(1); }
+             50% { opacity: 0.7; transform: scale(1.05); }
+         }
 
          /* Tooltip styling */
          .tooltip { --bs-tooltip-bg: var(--gn-chart-tooltip-bg); --bs-tooltip-color: var(--gn-light); --bs-tooltip-opacity: 1; --bs-tooltip-border-radius: var(--gn-border-radius-sm); --bs-tooltip-padding-y: var(--gn-spacing-xs); --bs-tooltip-padding-x: var(--gn-spacing-sm); --bs-tooltip-font-size: 0.8rem; max-width: 280px; box-shadow: var(--gn-box-shadow-sm); }
@@ -655,6 +660,10 @@
             </a>
              <!-- Device IP/Name Placeholder (14) -->
             <span class="navbar-text d-none d-lg-inline ms-2" id="navbarDeviceName"></span>
+            <!-- Test Mode Indicator -->
+            <span class="badge bg-warning text-dark ms-2 d-none" id="testModeIndicator" style="animation: pulse 2s infinite;">
+                <i class="fas fa-flask"></i> TEST MODE ACTIVE
+            </span>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
                     aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
                 <span class="navbar-toggler-icon"></span>
@@ -866,6 +875,7 @@
                                     <button id="deactivatePump" class="btn btn-warning"><i class="fas fa-stop-circle" aria-hidden="true"></i> Deactivate Pump</button>
                                     <button id="takeMeasurement" class="btn btn-info"><i class="fas fa-ruler-combined" aria-hidden="true"></i> Trigger Measurement</button>
                                     <button id="clearMeasurements" class="btn btn-danger"><i class="fas fa-trash-alt" aria-hidden="true"></i> Clear History</button>
+                                    <button id="toggleTestMode" class="btn btn-outline-warning"><i class="fas fa-flask" aria-hidden="true"></i> <span id="testModeButtonText">Enable Test Mode</span></button>
                                     <button id="restartSystem" class="btn btn-outline-danger mt-auto"><i class="fas fa-power-off" aria-hidden="true"></i> Restart System</button>
                                 </div>
                             </fieldset>

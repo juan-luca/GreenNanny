@@ -508,3 +508,29 @@ input:disabled, select:disabled, textarea:disabled {
 .border, .border-top, .border-right, .border-bottom, .border-left {
     border-color: #444 !important;
 }
+
+/* Event badge styling */
+.event-badge {
+    background-color: var(--warning);
+    color: var(--bg-primary);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: bold;
+}
+
+/* Pulse animation for test mode indicator */
+@keyframes pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(252, 163, 17, 0.7);
+    }
+    70% {
+        box-shadow: 0 0 0 10px rgba(252, 163, 17, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(252, 163, 17, 0);
+    }
+}
+
+.pulse {
+    animation: pulse 2s infinite;
+}
