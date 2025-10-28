@@ -949,7 +949,116 @@
 
                     <hr/>
 
-                    <!-- Row 7: Stage Configuration (was Row 6) -->
+                    <!-- Row 7: Discord Alerts Configuration (NEW) -->
+                    <section class="row" aria-label="Discord Alert Settings">
+                        <div class="col-12"><h2 class="h4 mb-3"><i class="fab fa-discord me-2"></i>Discord Alerts</h2></div>
+                        <div class="col-lg-12">
+                            <fieldset class="widget-dark">
+                                <legend class="widget-title"><i class="fas fa-bell me-2 opacity-75" aria-hidden="true"></i>Webhook Configuration</legend>
+                                <div class="widget-body">
+                                    <form id="discordForm">
+                                        <div class="mb-3">
+                                            <label for="discordWebhookUrl" class="form-label">Discord Webhook URL:</label>
+                                            <input type="url" id="discordWebhookUrl" class="form-control" placeholder="https://discord.com/api/webhooks/..." required/>
+                                            <div class="form-text">Get this URL from your Discord server settings: Server Settings → Integrations → Webhooks</div>
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="discordEnabled">
+                                                <label class="form-check-label" for="discordEnabled">
+                                                    <strong>Enable Discord Alerts</strong>
+                                                </label>
+                                            </div>
+                                        </div>
+
+                                        <hr class="my-3">
+                                        
+                                        <h6 class="mb-3">Alert Conditions:</h6>
+                                        
+                                        <div class="row g-3">
+                                            <!-- Temperature Alerts -->
+                                            <div class="col-md-6">
+                                                <div class="border p-3 rounded">
+                                                    <h6><i class="fas fa-thermometer-half me-2 text-danger"></i>Temperature Alerts</h6>
+                                                    <div class="form-check mb-2">
+                                                        <input class="form-check-input" type="checkbox" id="tempHighAlert">
+                                                        <label class="form-check-label" for="tempHighAlert">High Temperature</label>
+                                                    </div>
+                                                    <div class="input-group input-group-sm mb-3">
+                                                        <span class="input-group-text">Threshold:</span>
+                                                        <input type="number" id="tempHighThreshold" class="form-control" min="0" max="50" step="0.1" value="35">
+                                                        <span class="input-group-text">°C</span>
+                                                    </div>
+                                                    
+                                                    <div class="form-check mb-2">
+                                                        <input class="form-check-input" type="checkbox" id="tempLowAlert">
+                                                        <label class="form-check-label" for="tempLowAlert">Low Temperature</label>
+                                                    </div>
+                                                    <div class="input-group input-group-sm">
+                                                        <span class="input-group-text">Threshold:</span>
+                                                        <input type="number" id="tempLowThreshold" class="form-control" min="0" max="50" step="0.1" value="15">
+                                                        <span class="input-group-text">°C</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            
+                                            <!-- Humidity Alerts -->
+                                            <div class="col-md-6">
+                                                <div class="border p-3 rounded">
+                                                    <h6><i class="fas fa-tint me-2 text-primary"></i>Humidity Alerts</h6>
+                                                    <div class="form-check mb-2">
+                                                        <input class="form-check-input" type="checkbox" id="humHighAlert">
+                                                        <label class="form-check-label" for="humHighAlert">High Humidity</label>
+                                                    </div>
+                                                    <div class="input-group input-group-sm mb-3">
+                                                        <span class="input-group-text">Threshold:</span>
+                                                        <input type="number" id="humHighThreshold" class="form-control" min="0" max="100" step="1" value="85">
+                                                        <span class="input-group-text">%</span>
+                                                    </div>
+                                                    
+                                                    <div class="form-check mb-2">
+                                                        <input class="form-check-input" type="checkbox" id="humLowAlert">
+                                                        <label class="form-check-label" for="humLowAlert">Low Humidity</label>
+                                                    </div>
+                                                    <div class="input-group input-group-sm">
+                                                        <span class="input-group-text">Threshold:</span>
+                                                        <input type="number" id="humLowThreshold" class="form-control" min="0" max="100" step="1" value="30">
+                                                        <span class="input-group-text">%</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            
+                                            <!-- Other Alerts -->
+                                            <div class="col-12">
+                                                <div class="border p-3 rounded">
+                                                    <h6><i class="fas fa-exclamation-triangle me-2 text-warning"></i>System Alerts</h6>
+                                                    <div class="form-check mb-2">
+                                                        <input class="form-check-input" type="checkbox" id="sensorFailAlert">
+                                                        <label class="form-check-label" for="sensorFailAlert">Sensor Failure</label>
+                                                    </div>
+                                                    <div class="form-check">
+                                                        <input class="form-check-input" type="checkbox" id="deviceActivationAlert">
+                                                        <label class="form-check-label" for="deviceActivationAlert">Device Activations (Pump, Fan, Extractor)</label>
+                                                        <div class="form-text">⚠️ This can generate many notifications</div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="mt-3">
+                                            <button type="submit" class="btn btn-primary"><i class="fas fa-save me-2" aria-hidden="true"></i>Save Discord Configuration</button>
+                                            <button type="button" id="testDiscordAlert" class="btn btn-outline-secondary"><i class="fas fa-paper-plane me-2" aria-hidden="true"></i>Send Test Alert</button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </fieldset>
+                        </div>
+                    </section>
+
+                    <hr/>
+
+                    <!-- Row 8: Stage Configuration (was Row 6) -->
                     <section class="row" aria-labelledby="stage-config-title">
                         <div class="col-12">
                             <h2 class="h4 mb-3" id="stage-config-title">Stage Configuration</h2>

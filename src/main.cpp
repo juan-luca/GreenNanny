@@ -36,6 +36,7 @@ const int  daylightOffset_sec = 0;         // nada de DST
 #define MAX_JSON_OBJECTS 500 // Max measurements to store
 #define STAGES_CONFIG_FILE "/stages_config.json" // File for custom stage config
 #define THRESHOLDS_CONFIG_FILE "/thresholds_config.json" // File for fan/extractor thresholds
+#define DISCORD_CONFIG_FILE "/discord_config.json" // File for Discord webhook configuration
 
 // RTC - REMOVED
 // RTC_DS1307 rtc;
@@ -89,6 +90,39 @@ float simulatedTemperature = 25.0;
 bool testModeEnabled = false;
 unsigned long testModeStartTime = 0;
 const unsigned long testCycleDuration = 60000; // 60 segundos por ciclo completo
+
+// Discord webhook configuration
+String discordWebhookUrl = "";
+bool discordAlertsEnabled = false;
+unsigned long lastDiscordAlert = 0;
+const unsigned long discordAlertCooldown = 300000; // 5 minutos entre alertas del mismo tipo
+
+// Discord alert thresholds
+struct DiscordAlertConfig {
+    bool tempHighAlert;      // Alerta por temperatura alta
+    float tempHighThreshold; // Umbral de temperatura alta (°C)
+    bool tempLowAlert;       // Alerta por temperatura baja
+    float tempLowThreshold;  // Umbral de temperatura baja (°C)
+    bool humHighAlert;       // Alerta por humedad alta
+    float humHighThreshold;  // Umbral de humedad alta (%)
+    bool humLowAlert;        // Alerta por humedad baja
+    float humLowThreshold;   // Umbral de humedad baja (%)
+    bool sensorFailAlert;    // Alerta por fallo de sensor
+    bool deviceActivationAlert; // Alerta cuando se activan dispositivos
+};
+
+DiscordAlertConfig discordAlerts = {
+    true,   // tempHighAlert
+    35.0,   // tempHighThreshold
+    true,   // tempLowAlert
+    15.0,   // tempLowThreshold
+    true,   // humHighAlert
+    85.0,   // humHighThreshold
+    true,   // humLowAlert
+    30.0,   // humLowThreshold
+    true,   // sensorFailAlert
+    false   // deviceActivationAlert (deshabilitado por defecto para no spam)
+};
 
 // Inicialización del sensor DHT
 DHT dht(DHTPIN, DHTTYPE);
@@ -193,6 +227,14 @@ void handleSetThresholds();    // API endpoint to set thresholds
 void handleTestMode();         // API endpoint to toggle test mode
 void updateTestModeSimulation(); // Update simulated values in test mode
 void logEvent(const String& eventType, const String& details); // Log events to history
+// Discord Alerts
+void loadDiscordConfig();      // Load Discord webhook config from file
+void saveDiscordConfig();      // Save Discord webhook config to file
+void sendDiscordAlert(const String& title, const String& message, const String& color); // Send alert to Discord
+void checkAndSendAlerts(float temp, float hum, bool sensorValid); // Check conditions and send alerts
+void handleGetDiscordConfig(); // API endpoint to get Discord config
+void handleSetDiscordConfig(); // API endpoint to set Discord config
+void handleTestDiscordAlert(); // API endpoint to send test alert
 // Stage Control
 int getCurrentStageIndex(unsigned long daysElapsed); // Accepts daysElapsed as arg
 void loadManualStage();
@@ -387,6 +429,9 @@ void setup() {
 
     // ***** Load fan/extractor thresholds *****
     loadThresholds();
+
+    // ***** Load Discord webhook configuration *****
+    loadDiscordConfig();
 
     // Cargar mediciones previas
     {
@@ -769,6 +814,15 @@ void activatePump(unsigned long durationMs) {
     lastSecondPrint = millis(); // Reset timer for debug prints
     pumpActivationCount++;
     Serial.print("[INFO] Contador activaciones bomba: "); Serial.println(pumpActivationCount);
+    
+    // Enviar notificación a Discord si está habilitada
+    if (discordAlerts.deviceActivationAlert) {
+        sendDiscordAlert(
+            "💧 Pump Activated",
+            String("The water pump has been activated for ") + String(durationMs / 1000) + " seconds.",
+            "4169E1" // Azul royal
+        );
+    }
 }
 
 // Desactiva la bomba
@@ -798,6 +852,15 @@ void activateFan() {
     float hum = getHumidity();
     String details = "Temp: " + String(temp, 1) + "°C, Hum: " + String(hum, 1) + "%";
     logEvent("FAN_ON", details);
+    
+    // Enviar notificación a Discord si está habilitada
+    if (discordAlerts.deviceActivationAlert) {
+        sendDiscordAlert(
+            "🌀 Fan Activated",
+            "The fan has been turned ON due to environmental conditions.\n" + details,
+            "00CED1" // Turquesa
+        );
+    }
 }
 
 // Desactiva el ventilador
@@ -823,6 +886,15 @@ void activateExtractor() {
     float hum = getHumidity();
     String details = "Temp: " + String(temp, 1) + "°C, Hum: " + String(hum, 1) + "%";
     logEvent("EXTRACTOR_ON", details);
+    
+    // Enviar notificación a Discord si está habilitada
+    if (discordAlerts.deviceActivationAlert) {
+        sendDiscordAlert(
+            "💨 Extractor Activated",
+            "The extractor has been turned ON due to environmental conditions.\n" + details,
+            "9370DB" // Púrpura
+        );
+    }
 }
 
 // Desactiva la turbina de extracción
@@ -1537,6 +1609,9 @@ void controlIndependiente() {
     serializeJson(doc, measurementString);
     saveMeasurement(measurementString); // Guardar en array y archivo
 
+    // 7. Verificar y enviar alertas de Discord si están habilitadas
+    checkAndSendAlerts(temperature, humidity, sensorValid);
+
     unsigned long duration = millis() - startMillis;
     Serial.print("[CONTROL] Ciclo finalizado en "); Serial.print(duration); Serial.println(" ms.");
 }
@@ -2209,6 +2284,339 @@ void handleTestMode() {
     server.send(405, "text/plain", "Method Not Allowed");
 }
 
+// ============================================
+// DISCORD WEBHOOK ALERTS
+// ============================================
+
+// Cargar configuración de Discord desde archivo
+void loadDiscordConfig() {
+    if (!LittleFS.exists(DISCORD_CONFIG_FILE)) {
+        Serial.println("[DISCORD] No config file found. Using defaults.");
+        return;
+    }
+    
+    File file = LittleFS.open(DISCORD_CONFIG_FILE, "r");
+    if (!file) {
+        Serial.println("[ERROR] Could not open Discord config file.");
+        return;
+    }
+    
+    StaticJsonDocument<512> doc;
+    DeserializationError error = deserializeJson(doc, file);
+    file.close();
+    
+    if (error) {
+        Serial.print("[ERROR] Failed to parse Discord config: ");
+        Serial.println(error.c_str());
+        return;
+    }
+    
+    discordWebhookUrl = doc["webhookUrl"] | "";
+    discordAlertsEnabled = doc["enabled"] | false;
+    
+    if (doc.containsKey("alerts")) {
+        JsonObject alerts = doc["alerts"];
+        discordAlerts.tempHighAlert = alerts["tempHighAlert"] | true;
+        discordAlerts.tempHighThreshold = alerts["tempHighThreshold"] | 35.0;
+        discordAlerts.tempLowAlert = alerts["tempLowAlert"] | true;
+        discordAlerts.tempLowThreshold = alerts["tempLowThreshold"] | 15.0;
+        discordAlerts.humHighAlert = alerts["humHighAlert"] | true;
+        discordAlerts.humHighThreshold = alerts["humHighThreshold"] | 85.0;
+        discordAlerts.humLowAlert = alerts["humLowAlert"] | true;
+        discordAlerts.humLowThreshold = alerts["humLowThreshold"] | 30.0;
+        discordAlerts.sensorFailAlert = alerts["sensorFailAlert"] | true;
+        discordAlerts.deviceActivationAlert = alerts["deviceActivationAlert"] | false;
+    }
+    
+    Serial.println("[DISCORD] Configuration loaded successfully.");
+    if (discordAlertsEnabled && discordWebhookUrl.length() > 0) {
+        Serial.println("[DISCORD] Alerts are ENABLED.");
+    }
+}
+
+// Guardar configuración de Discord en archivo
+void saveDiscordConfig() {
+    StaticJsonDocument<512> doc;
+    
+    doc["webhookUrl"] = discordWebhookUrl;
+    doc["enabled"] = discordAlertsEnabled;
+    
+    JsonObject alerts = doc.createNestedObject("alerts");
+    alerts["tempHighAlert"] = discordAlerts.tempHighAlert;
+    alerts["tempHighThreshold"] = discordAlerts.tempHighThreshold;
+    alerts["tempLowAlert"] = discordAlerts.tempLowAlert;
+    alerts["tempLowThreshold"] = discordAlerts.tempLowThreshold;
+    alerts["humHighAlert"] = discordAlerts.humHighAlert;
+    alerts["humHighThreshold"] = discordAlerts.humHighThreshold;
+    alerts["humLowAlert"] = discordAlerts.humLowAlert;
+    alerts["humLowThreshold"] = discordAlerts.humLowThreshold;
+    alerts["sensorFailAlert"] = discordAlerts.sensorFailAlert;
+    alerts["deviceActivationAlert"] = discordAlerts.deviceActivationAlert;
+    
+    File file = LittleFS.open(DISCORD_CONFIG_FILE, "w");
+    if (!file) {
+        Serial.println("[ERROR] Could not open Discord config file for writing.");
+        return;
+    }
+    
+    serializeJson(doc, file);
+    file.close();
+    Serial.println("[DISCORD] Configuration saved.");
+}
+
+// Enviar alerta a Discord
+void sendDiscordAlert(const String& title, const String& message, const String& color) {
+    if (!discordAlertsEnabled || discordWebhookUrl.length() == 0) {
+        return;
+    }
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[DISCORD] Cannot send alert: WiFi not connected.");
+        return;
+    }
+    
+    // Rate limiting: no enviar la misma alerta muy seguido
+    unsigned long now = millis();
+    if (now - lastDiscordAlert < discordAlertCooldown) {
+        Serial.println("[DISCORD] Alert cooldown active. Skipping.");
+        return;
+    }
+    
+    Serial.print("[DISCORD] Sending alert: ");
+    Serial.println(title);
+    
+    // Parsear URL del webhook
+    String host;
+    String path;
+    int port = 443;
+    bool useSSL = true;
+    
+    if (discordWebhookUrl.startsWith("https://")) {
+        int hostStart = 8; // después de "https://"
+        int pathStart = discordWebhookUrl.indexOf('/', hostStart);
+        if (pathStart > 0) {
+            host = discordWebhookUrl.substring(hostStart, pathStart);
+            path = discordWebhookUrl.substring(pathStart);
+        } else {
+            host = discordWebhookUrl.substring(hostStart);
+            path = "/";
+        }
+    } else {
+        Serial.println("[DISCORD ERROR] Invalid webhook URL (must be HTTPS).");
+        return;
+    }
+    
+    // Crear cliente HTTPS
+    WiFiClientSecure client;
+    client.setInsecure(); // No verificar certificado SSL (para simplificar)
+    
+    if (!client.connect(host.c_str(), port)) {
+        Serial.println("[DISCORD ERROR] Connection failed.");
+        return;
+    }
+    
+    // Construir JSON payload
+    StaticJsonDocument<512> doc;
+    JsonArray embeds = doc.createNestedArray("embeds");
+    JsonObject embed = embeds.createNestedObject();
+    embed["title"] = title;
+    embed["description"] = message;
+    embed["color"] = strtol(color.c_str(), NULL, 16); // Convertir hex a decimal
+    embed["timestamp"] = ""; // Discord usará timestamp actual
+    
+    JsonObject footer = embed.createNestedObject("footer");
+    footer["text"] = "GreenNanny Alert System";
+    
+    String payload;
+    serializeJson(doc, payload);
+    
+    // Enviar petición POST
+    client.print(String("POST ") + path + " HTTP/1.1\r\n");
+    client.print(String("Host: ") + host + "\r\n");
+    client.print("Content-Type: application/json\r\n");
+    client.print("Content-Length: " + String(payload.length()) + "\r\n");
+    client.print("Connection: close\r\n\r\n");
+    client.print(payload);
+    
+    // Esperar respuesta
+    unsigned long timeout = millis();
+    while (client.available() == 0) {
+        if (millis() - timeout > 5000) {
+            Serial.println("[DISCORD ERROR] Timeout.");
+            client.stop();
+            return;
+        }
+    }
+    
+    // Leer respuesta
+    String response = "";
+    while (client.available()) {
+        response += client.readStringUntil('\r');
+    }
+    
+    if (response.indexOf("204") > 0 || response.indexOf("200") > 0) {
+        Serial.println("[DISCORD] Alert sent successfully!");
+        lastDiscordAlert = now;
+    } else {
+        Serial.print("[DISCORD ERROR] Failed to send: ");
+        Serial.println(response);
+    }
+    
+    client.stop();
+}
+
+// Verificar condiciones y enviar alertas si es necesario
+void checkAndSendAlerts(float temp, float hum, bool sensorValid) {
+    if (!discordAlertsEnabled || discordWebhookUrl.length() == 0) {
+        return;
+    }
+    
+    // Alerta por fallo de sensor
+    if (!sensorValid && discordAlerts.sensorFailAlert) {
+        sendDiscordAlert(
+            "⚠️ Sensor Failure Detected",
+            "The DHT11 sensor is not responding or returning invalid data. Please check the connection.",
+            "FF0000" // Rojo
+        );
+        return; // No verificar otros umbrales si el sensor falla
+    }
+    
+    // Alerta por temperatura alta
+    if (sensorValid && discordAlerts.tempHighAlert && temp >= discordAlerts.tempHighThreshold) {
+        sendDiscordAlert(
+            "🔥 High Temperature Alert",
+            String("Temperature has reached ") + String(temp, 1) + "°C (threshold: " + String(discordAlerts.tempHighThreshold, 1) + "°C)",
+            "FF6B00" // Naranja
+        );
+    }
+    
+    // Alerta por temperatura baja
+    if (sensorValid && discordAlerts.tempLowAlert && temp <= discordAlerts.tempLowThreshold) {
+        sendDiscordAlert(
+            "❄️ Low Temperature Alert",
+            String("Temperature has dropped to ") + String(temp, 1) + "°C (threshold: " + String(discordAlerts.tempLowThreshold, 1) + "°C)",
+            "00BFFF" // Azul
+        );
+    }
+    
+    // Alerta por humedad alta
+    if (sensorValid && discordAlerts.humHighAlert && hum >= discordAlerts.humHighThreshold) {
+        sendDiscordAlert(
+            "💧 High Humidity Alert",
+            String("Humidity has reached ") + String(hum, 1) + "% (threshold: " + String(discordAlerts.humHighThreshold, 1) + "%)",
+            "4169E1" // Azul royal
+        );
+    }
+    
+    // Alerta por humedad baja
+    if (sensorValid && discordAlerts.humLowAlert && hum <= discordAlerts.humLowThreshold) {
+        sendDiscordAlert(
+            "🏜️ Low Humidity Alert",
+            String("Humidity has dropped to ") + String(hum, 1) + "% (threshold: " + String(discordAlerts.humLowThreshold, 1) + "%)",
+            "FFA500" // Naranja oscuro
+        );
+    }
+}
+
+// Handler para /getDiscordConfig - Obtener configuración de Discord
+void handleGetDiscordConfig() {
+    Serial.println("[HTTP] Solicitud /getDiscordConfig (GET).");
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    
+    StaticJsonDocument<512> doc;
+    doc["webhookUrl"] = discordWebhookUrl;
+    doc["enabled"] = discordAlertsEnabled;
+    
+    JsonObject alerts = doc.createNestedObject("alerts");
+    alerts["tempHighAlert"] = discordAlerts.tempHighAlert;
+    alerts["tempHighThreshold"] = discordAlerts.tempHighThreshold;
+    alerts["tempLowAlert"] = discordAlerts.tempLowAlert;
+    alerts["tempLowThreshold"] = discordAlerts.tempLowThreshold;
+    alerts["humHighAlert"] = discordAlerts.humHighAlert;
+    alerts["humHighThreshold"] = discordAlerts.humHighThreshold;
+    alerts["humLowAlert"] = discordAlerts.humLowAlert;
+    alerts["humLowThreshold"] = discordAlerts.humLowThreshold;
+    alerts["sensorFailAlert"] = discordAlerts.sensorFailAlert;
+    alerts["deviceActivationAlert"] = discordAlerts.deviceActivationAlert;
+    
+    String response;
+    serializeJson(doc, response);
+    server.send(200, "application/json", response);
+}
+
+// Handler para /setDiscordConfig - Configurar Discord webhook
+void handleSetDiscordConfig() {
+    Serial.println("[HTTP] Solicitud /setDiscordConfig (POST).");
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    
+    if (!server.hasArg("plain")) {
+        server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Missing body\"}");
+        return;
+    }
+    
+    StaticJsonDocument<512> doc;
+    DeserializationError error = deserializeJson(doc, server.arg("plain"));
+    
+    if (error) {
+        server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid JSON\"}");
+        return;
+    }
+    
+    // Actualizar configuración
+    if (doc.containsKey("webhookUrl")) {
+        discordWebhookUrl = doc["webhookUrl"].as<String>();
+    }
+    if (doc.containsKey("enabled")) {
+        discordAlertsEnabled = doc["enabled"];
+    }
+    
+    if (doc.containsKey("alerts")) {
+        JsonObject alerts = doc["alerts"];
+        if (alerts.containsKey("tempHighAlert")) discordAlerts.tempHighAlert = alerts["tempHighAlert"];
+        if (alerts.containsKey("tempHighThreshold")) discordAlerts.tempHighThreshold = alerts["tempHighThreshold"];
+        if (alerts.containsKey("tempLowAlert")) discordAlerts.tempLowAlert = alerts["tempLowAlert"];
+        if (alerts.containsKey("tempLowThreshold")) discordAlerts.tempLowThreshold = alerts["tempLowThreshold"];
+        if (alerts.containsKey("humHighAlert")) discordAlerts.humHighAlert = alerts["humHighAlert"];
+        if (alerts.containsKey("humHighThreshold")) discordAlerts.humHighThreshold = alerts["humHighThreshold"];
+        if (alerts.containsKey("humLowAlert")) discordAlerts.humLowAlert = alerts["humLowAlert"];
+        if (alerts.containsKey("humLowThreshold")) discordAlerts.humLowThreshold = alerts["humLowThreshold"];
+        if (alerts.containsKey("sensorFailAlert")) discordAlerts.sensorFailAlert = alerts["sensorFailAlert"];
+        if (alerts.containsKey("deviceActivationAlert")) discordAlerts.deviceActivationAlert = alerts["deviceActivationAlert"];
+    }
+    
+    saveDiscordConfig();
+    
+    server.send(200, "application/json", "{\"status\":\"success\", \"message\":\"Discord configuration updated\"}");
+}
+
+// Handler para /testDiscordAlert - Enviar alerta de prueba
+void handleTestDiscordAlert() {
+    Serial.println("[HTTP] Solicitud /testDiscordAlert (POST).");
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    
+    if (!discordAlertsEnabled || discordWebhookUrl.length() == 0) {
+        server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Discord alerts not configured or disabled\"}");
+        return;
+    }
+    
+    // Enviar alerta de prueba
+    float temp = getTemperature();
+    float hum = getHumidity();
+    String message = String("This is a test alert from GreenNanny!\n\n") +
+                    "Current conditions:\n" +
+                    "🌡️ Temperature: " + String(temp, 1) + "°C\n" +
+                    "💧 Humidity: " + String(hum, 1) + "%\n\n" +
+                    "If you received this message, Discord alerts are working correctly!";
+    
+    sendDiscordAlert(
+        "✅ Test Alert - GreenNanny",
+        message,
+        "00FF00" // Verde
+    );
+    
+    server.send(200, "application/json", "{\"status\":\"success\", \"message\":\"Test alert sent to Discord\"}");
+}
+
 // Handler para /setManualStage - Establecer etapa manual
 void handleSetManualStage() {
     Serial.println("[HTTP] Solicitud /setManualStage (POST).");
@@ -2445,6 +2853,9 @@ void setupServer() {
     server.on("/setThresholds", HTTP_POST, handleSetThresholds);         // Configurar umbrales de temp/humedad
     server.on("/getThresholds", HTTP_GET, handleGetThresholds);          // Obtener umbrales actuales
     server.on("/testMode", HTTP_ANY, handleTestMode);                    // Activar/desactivar modo test (GET/POST)
+    server.on("/getDiscordConfig", HTTP_GET, handleGetDiscordConfig);    // Obtener configuración de Discord
+    server.on("/setDiscordConfig", HTTP_POST, handleSetDiscordConfig);   // Configurar Discord webhook
+    server.on("/testDiscordAlert", HTTP_POST, handleTestDiscordAlert);   // Enviar alerta de prueba a Discord
     server.on("/setManualStage", HTTP_POST, handleSetManualStage);       // Activar control manual de etapa
     server.on("/resetManualStage", HTTP_POST, handleResetManualStage);   // Desactivar control manual
     server.on("/updateStage", HTTP_POST, handleUpdateStage);             // Modificar parámetros de una etapa

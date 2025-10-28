@@ -144,6 +144,21 @@ const El = {
     toggleTestModeBtn: document.getElementById('toggleTestMode'),
     testModeButtonText: document.getElementById('testModeButtonText'),
     testModeIndicator: document.getElementById('testModeIndicator'),
+    // Discord Configuration (NEW)
+    discordForm: document.getElementById('discordForm'),
+    discordWebhookUrl: document.getElementById('discordWebhookUrl'),
+    discordEnabled: document.getElementById('discordEnabled'),
+    tempHighAlert: document.getElementById('tempHighAlert'),
+    tempHighThreshold: document.getElementById('tempHighThreshold'),
+    tempLowAlert: document.getElementById('tempLowAlert'),
+    tempLowThreshold: document.getElementById('tempLowThreshold'),
+    humHighAlert: document.getElementById('humHighAlert'),
+    humHighThreshold: document.getElementById('humHighThreshold'),
+    humLowAlert: document.getElementById('humLowAlert'),
+    humLowThreshold: document.getElementById('humLowThreshold'),
+    sensorFailAlert: document.getElementById('sensorFailAlert'),
+    deviceActivationAlert: document.getElementById('deviceActivationAlert'),
+    testDiscordAlert: document.getElementById('testDiscordAlert'),
     // Global & Footer
     toastContainer: document.getElementById('toastContainer'),
     globalLoader: document.getElementById('globalLoader'),
@@ -1554,6 +1569,111 @@ El.activatePumpBtn?.addEventListener('click', async () => {
         }
     });
 
+    // --- Discord Configuration (NEW) ---
+    // Load Discord configuration on page load
+    async function loadDiscordConfig() {
+        try {
+            const config = await fetchData('/getDiscordConfig');
+            if (config) {
+                El.discordWebhookUrl.value = config.webhookUrl || '';
+                El.discordEnabled.checked = config.enabled || false;
+                
+                if (config.alerts) {
+                    El.tempHighAlert.checked = config.alerts.tempHighAlert ?? true;
+                    El.tempHighThreshold.value = config.alerts.tempHighThreshold ?? 35;
+                    El.tempLowAlert.checked = config.alerts.tempLowAlert ?? true;
+                    El.tempLowThreshold.value = config.alerts.tempLowThreshold ?? 15;
+                    El.humHighAlert.checked = config.alerts.humHighAlert ?? true;
+                    El.humHighThreshold.value = config.alerts.humHighThreshold ?? 85;
+                    El.humLowAlert.checked = config.alerts.humLowAlert ?? true;
+                    El.humLowThreshold.value = config.alerts.humLowThreshold ?? 30;
+                    El.sensorFailAlert.checked = config.alerts.sensorFailAlert ?? true;
+                    El.deviceActivationAlert.checked = config.alerts.deviceActivationAlert ?? false;
+                }
+            }
+        } catch (error) {
+            console.error("Error loading Discord config:", error);
+        }
+    }
+
+    // Save Discord configuration
+    El.discordForm?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const data = {
+            webhookUrl: El.discordWebhookUrl.value.trim(),
+            enabled: El.discordEnabled.checked,
+            alerts: {
+                tempHighAlert: El.tempHighAlert.checked,
+                tempHighThreshold: parseFloat(El.tempHighThreshold.value),
+                tempLowAlert: El.tempLowAlert.checked,
+                tempLowThreshold: parseFloat(El.tempLowThreshold.value),
+                humHighAlert: El.humHighAlert.checked,
+                humHighThreshold: parseFloat(El.humHighThreshold.value),
+                humLowAlert: El.humLowAlert.checked,
+                humLowThreshold: parseFloat(El.humLowThreshold.value),
+                sensorFailAlert: El.sensorFailAlert.checked,
+                deviceActivationAlert: El.deviceActivationAlert.checked
+            }
+        };
+
+        const button = El.discordForm.querySelector('button[type="submit"]');
+        setLoadingState(button, true, "Saving...");
+        try {
+            await postData('/setDiscordConfig', data);
+            showToast('Discord configuration saved successfully.', 'success');
+            announceSRStatus('Discord alerts configuration updated.');
+        } catch (error) {
+            /* Error handled by postData */
+        }
+        finally { setLoadingState(button, false); }
+    });
+
+    // Test Discord alert button
+    El.testDiscordAlert?.addEventListener('click', async () => {
+        if (!El.discordWebhookUrl.value.trim()) {
+            showToast('Please enter a webhook URL first.', 'warning');
+            return;
+        }
+        
+        // Check if enabled
+        if (!El.discordEnabled.checked) {
+            showToast('Please enable Discord alerts first.', 'warning');
+            return;
+        }
+        
+        setLoadingState(El.testDiscordAlert, true, "Sending...");
+        try {
+            // Save config first to ensure webhook URL is updated
+            const data = {
+                webhookUrl: El.discordWebhookUrl.value.trim(),
+                enabled: El.discordEnabled.checked,
+                alerts: {
+                    tempHighAlert: El.tempHighAlert.checked,
+                    tempHighThreshold: parseFloat(El.tempHighThreshold.value),
+                    tempLowAlert: El.tempLowAlert.checked,
+                    tempLowThreshold: parseFloat(El.tempLowThreshold.value),
+                    humHighAlert: El.humHighAlert.checked,
+                    humHighThreshold: parseFloat(El.humHighThreshold.value),
+                    humLowAlert: El.humLowAlert.checked,
+                    humLowThreshold: parseFloat(El.humLowThreshold.value),
+                    sensorFailAlert: El.sensorFailAlert.checked,
+                    deviceActivationAlert: El.deviceActivationAlert.checked
+                }
+            };
+            await postData('/setDiscordConfig', data);
+            
+            // Send test alert
+            await fetch(`${BASE_URL}/testDiscordAlert`, { method: 'POST' });
+            
+            showToast('Test alert sent! Check your Discord channel.', 'success');
+            announceSRStatus('Discord test alert sent.');
+        } catch (error) {
+            showToast('Error sending test alert: ' + error.message, 'error');
+        }
+        finally { setLoadingState(El.testDiscordAlert, false); }
+    });
+
     // Refresh Stage Info Button (Stage Control Card)
     El.refreshStageBtn?.addEventListener('click', async () => {
         setLoadingState(El.refreshStageBtn, true, "Refreshing...");
@@ -1693,7 +1813,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         await populateStageSelector();
         // 5. Load thresholds into form inputs
         await fetchAndUpdateThresholdsDisplay();
-        // 6. Initialize interactive elements like Bootstrap tooltips
+        // 6. Load Discord configuration
+        await loadDiscordConfig();
+        // 7. Initialize interactive elements like Bootstrap tooltips
         initTooltips();
 
         console.log("Initialization complete.");
