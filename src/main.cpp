@@ -1,6 +1,7 @@
 
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
+#include <ESP8266NetBIOS.h>
 #include <ESP8266WebServer.h>
 #include <DNSServer.h>
 #include <DHT.h>
@@ -59,7 +60,13 @@ String targetSsid = "";
 String targetPass = "";
 unsigned long connectionAttemptStartMillis = 0;
 
-const char* HOSTNAME = "greennanny2";
+const char* HOSTNAME = "greennanny"; // Nombre base preferido
+String actualHostname = "";          // Hostname usado para DHCP (opcional)
+String mdnsAdvertisedName = "";      // Hostname efectivo anunciado por mDNS/NBNS
+
+// WiFi por defecto si no hay configuracin guardada
+const char* DEFAULT_WIFI_SSID = "Personal-244";
+const char* DEFAULT_WIFI_PASSWORD = "0040640653";
 // Variables de tiempo
 unsigned long startTime = 0; // millis() at boot
 unsigned long lastDebugPrint = 0;
@@ -126,6 +133,7 @@ void setupBomba();
 void setupServer();
 void startAPMode();
 bool syncNtpTime(); // PROTOTIPO NTP (Modified: no RTC interaction)
+void startNameServices(); // Inicia mDNS/NBNS con greennanny, greennanny2, ...
 // Network & Config
 void loadWifiCredentials();
 void handleConnectWifi(); // Manual connection attempt via UI
@@ -155,6 +163,7 @@ void handleUpdateStage(); // NEW: API endpoint to update a stage
 String loadMeasurements();
 void saveMeasurement(const String& jsonString);
 void saveMeasurementFile(const String& allMeasurementsString);
+void appendMeasurementToFile(const String& jsonString);
 int parseData(String input, String output[]); // Parses stored measurements string
 String arrayToString(String array[], size_t arraySize); // Converts array back to string for saving
 void formatMeasurementsToString(String& formattedString); // Formats for JSON array response
@@ -171,6 +180,56 @@ void handleSerialCommands(); // Optional serial control (updated for NTP time)
 
 
 // --- IMPLEMENTACIONES ---
+
+// Comprueba si un nombre .local ya existe en la red (usa el resolver mDNS de lwIP)
+static bool isMdnsNameTaken(const String& hostNoSuffix) {
+    if (WiFi.status() != WL_CONNECTED) return false; // Sin WiFi, no podemos comprobar, asumir libre
+    IPAddress ip;
+    String fqdn = hostNoSuffix + ".local";
+    int res = WiFi.hostByName(fqdn.c_str(), ip);
+    if (res == 1) {
+        // Considerar tomado si no es 0.0.0.0
+        return (ip[0] != 0 || ip[1] != 0 || ip[2] != 0 || ip[3] != 0);
+    }
+    return false;
+}
+
+// Inicia mDNS/NBNS probando greennanny, greennanny2, greennanny3...
+void startNameServices() {
+    const char* base = HOSTNAME; // "greennanny"
+    const int maxSuffix = 9;     // greennanny .. greennanny9
+
+    // Intentar nombres: sin sufijo primero, luego 2..9
+    String chosen = "";
+    for (int i = 1; i <= maxSuffix; i++) {
+        String candidate = (i == 1) ? String(base) : String(base) + String(i);
+        // No iniciar si ya hay otro con ese nombre
+        if (isMdnsNameTaken(candidate)) {
+            Serial.print("[mDNS] Detectado en red: "); Serial.print(candidate); Serial.println(".local (ocupado)");
+            continue;
+        }
+        if (MDNS.begin(candidate.c_str())) {
+            chosen = candidate;
+            MDNS.addService("http", "tcp", 80);
+            Serial.print("[mDNS] Anunciado como: "); Serial.print(candidate); Serial.println(".local");
+            break;
+        }
+        delay(50);
+    }
+    if (chosen.length() == 0) {
+        Serial.println("[mDNS ERROR] No se pudo iniciar mDNS con ninguno de los nombres.");
+    }
+    mdnsAdvertisedName = chosen; // Puede quedar vacío si falló mDNS
+
+    // NBNS para Windows
+    if (mdnsAdvertisedName.length()) {
+        if (NBNS.begin(mdnsAdvertisedName.c_str())) {
+            Serial.print("[NBNS] Anunciado como: http://"); Serial.print(mdnsAdvertisedName); Serial.println("/");
+        } else {
+            Serial.println("[NBNS WARN] No se pudo iniciar NBNS.");
+        }
+    }
+}
 
 // *** MODIFIED FUNCTION: Sincroniza la hora con NTP y la establece en el sistema ***
 bool syncNtpTime() {
@@ -278,8 +337,17 @@ void setup() {
     loadStagesConfig();
 
     // Cargar mediciones previas
-    jsonIndex = parseData(loadMeasurements(), measurements);
-    Serial.print("[INFO] Cargadas "); Serial.print(jsonIndex); Serial.println(" mediciones previas.");
+    {
+        String raw = loadMeasurements();
+        jsonIndex = parseData(raw, measurements);
+        Serial.print("[INFO] Cargadas "); Serial.print(jsonIndex); Serial.println(" mediciones previas.");
+        // Reparación automática si el contenido del archivo parece corrupto/truncado
+        String cleaned = arrayToString(measurements, jsonIndex);
+        if (cleaned.length() > 0 && cleaned.length() != raw.length()) {
+            Serial.println("[REPAIR] Detectada posible corrupción/truncado en historial. Reescribiendo archivo limpio...");
+            saveMeasurementFile(cleaned);
+        }
+    }
 
     // Cargar intervalo de medición
     loadMeasurementInterval();
@@ -300,13 +368,8 @@ void setup() {
          Serial.print("[INFO] RSSI: "); Serial.print(WiFi.RSSI()); Serial.println(" dBm");
          dnsServer.stop(); // Stop DNS server if connected to WiFi
 
-         // *** INICIAR MDNS ***
-         if (MDNS.begin("greennanny2")) {
-             Serial.println("[INFO] Servidor mDNS iniciado. Accede en http://greennanny.local");
-             MDNS.addService("http", "tcp", 80);
-         } else {
-             Serial.println("[ERROR] No se pudo iniciar el servidor mDNS.");
-         }
+         // *** INICIAR mDNS/NBNS con nombres secuenciales ***
+         startNameServices();
 
          // *** INTENTAR SINCRONIZAR HORA NTP ***
          if (syncNtpTime()) {
@@ -366,6 +429,8 @@ void loop() {
         
         WiFi.disconnect();
         WiFi.mode(WIFI_STA);
+        actualHostname = String(HOSTNAME) + "-" + String(ESP.getChipId() & 0xFFF, HEX);
+        WiFi.hostname(actualHostname);
         WiFi.begin(targetSsid.c_str(), targetPass.c_str());
         
         wifiState = CONNECTION_IN_PROGRESS;
@@ -539,65 +604,30 @@ void setupBomba() {
 // Obtiene la humedad (real o simulada)
 // MODIFIED: Non-blocking sensor read
 float getHumidity() {
-    static unsigned long lastReadAttempt = 0;
-    static int retryCount = 0;
-    static float lastValidHumidity = -1.0; // Cache the last known good value
-
-    unsigned long currentMillis = millis();
-
-    // Allow a new read attempt only after a short interval (e.g., 2 seconds)
-    if (currentMillis - lastReadAttempt > 2000) {
-        float h = dht.readHumidity();
-
-        if (!isnan(h)) {
-            // Success! Reset retries and update cache.
-            lastReadAttempt = currentMillis;
-            retryCount = 0;
-            lastValidHumidity = h;
-            return h;
-        } else {
-            // Failure. Increment retry count for the next attempt.
-            Serial.println("[WARN] Falla lectura de humedad.");
-            lastReadAttempt = currentMillis; // Mark time of this failed attempt
-            retryCount++;
-            if (retryCount >= 3) {
-                 Serial.println("[ERROR] Falla lectura de humedad después de 3 intentos. Devolviendo último valor válido o error.");
-                 return lastValidHumidity; // Return the last good value, or -1.0 if none exists
-            }
-        }
+    // Lectura simple con un reintento corto para evitar NaN del DHT11
+    float h = dht.readHumidity();
+    if (isnan(h)) {
+        delay(100);
+        h = dht.readHumidity();
     }
-    // If waiting for retry interval or if retries are in progress, return last known value.
-    return lastValidHumidity;
+    if (isnan(h)) {
+        Serial.println("[WARN] Humedad DHT inválida (NaN)");
+        return -1.0; // Indicador de invalidez
+    }
+    return h;
 }
 // MODIFIED: Non-blocking sensor read
 float getTemperature() {
-    static unsigned long lastReadAttempt = 0;
-    static int retryCount = 0;
-    static float lastValidTemperature = -99.0; // Cache the last known good value
-
-    unsigned long currentMillis = millis();
-
-    if (currentMillis - lastReadAttempt > 2000) {
-        float t = dht.readTemperature();
-
-        if (!isnan(t)) {
-            // Success!
-            lastReadAttempt = currentMillis;
-            retryCount = 0;
-            lastValidTemperature = t;
-            return t;
-        } else {
-            // Failure.
-             Serial.println("[WARN] Falla lectura de temperatura.");
-            lastReadAttempt = currentMillis;
-            retryCount++;
-            if (retryCount >= 3) {
-                 Serial.println("[ERROR] Falla lectura de temperatura después de 3 intentos. Devolviendo último valor válido o error.");
-                return lastValidTemperature;
-            }
-        }
+    float t = dht.readTemperature();
+    if (isnan(t)) {
+        delay(100);
+        t = dht.readTemperature();
     }
-    return lastValidTemperature;
+    if (isnan(t)) {
+        Serial.println("[WARN] Temperatura DHT inválida (NaN)");
+        return -99.0; // Indicador de invalidez
+    }
+    return t;
 }
 
 // Calcula el VPD (Déficit de Presión de Vapor) en kPa
@@ -751,35 +781,55 @@ void saveMeasurementInterval(int interval) {
 // Carga credenciales WiFi desde archivo
 void loadWifiCredentials() {
     File file = LittleFS.open("/WifiConfig.txt", "r");
-    if (!file || !file.available()) {
-        if(file) file.close();
-        Serial.println("[INFO] No 'WifiConfig.txt' o vacío. No autoconexión.");
-        return;
-    }
-    String ssid = file.readStringUntil('\n');
-    String password = file.readStringUntil('\n');
-    file.close();
-    ssid.trim();
-    password.trim();
-    if (ssid.length() == 0) {
-         Serial.println("[WARN] SSID vacío en 'WifiConfig.txt'.");
-         return;
-    }
-    Serial.print("[ACCION] Intentando conectar a WiFi guardada: '"); Serial.print(ssid); Serial.println("'...");
-    WiFi.mode(WIFI_STA);
-    // <-- CAMBIO: Se elimina el bloque 'if (useStaticIP && !WiFi.config(...))'
-    WiFi.begin(ssid.c_str(), password.c_str());
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) { // 10 segundos de espera
-        delay(500); Serial.print("."); attempts++;
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\n[INFO] Conexión WiFi exitosa.");
-        Serial.print("[INFO] IP: "); Serial.println(WiFi.localIP());
-        Serial.print("[INFO] RSSI: "); Serial.print(WiFi.RSSI()); Serial.println(" dBm");
+    String ssid = "";
+    String password = "";
+    bool hadFile = (file && file.available());
+    if (hadFile) {
+        ssid = file.readStringUntil('\n');
+        password = file.readStringUntil('\n');
+        file.close();
+        ssid.trim();
+        password.trim();
     } else {
-        Serial.println("\n[ERROR] Falló conexión WiFi con credenciales guardadas.");
-        WiFi.disconnect(false); // No borrar credenciales internas
+        if (file) file.close();
+        Serial.println("[INFO] No 'WifiConfig.txt' o vacío. Se probará WiFi por defecto.");
+    }
+
+    auto tryConnect = [&](const String& s, const String& p, const char* label) -> bool {
+        if (s.length() == 0) return false;
+        Serial.print("[ACCION] Intentando conectar (" ); Serial.print(label); Serial.print(") a '"); Serial.print(s); Serial.println("'");
+        actualHostname = String(HOSTNAME) + "-" + String(ESP.getChipId() & 0xFFF, HEX);
+        WiFi.mode(WIFI_STA);
+        WiFi.hostname(actualHostname);
+        WiFi.begin(s.c_str(), p.c_str());
+        int attempts = 0;
+        while (WiFi.status() != WL_CONNECTED && attempts < 30) { // ~15s
+            delay(500); Serial.print("."); attempts++;
+        }
+        Serial.println("");
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("[INFO] Conexión WiFi exitosa.");
+            Serial.print("[INFO] IP: "); Serial.println(WiFi.localIP());
+            Serial.print("[INFO] RSSI: "); Serial.print(WiFi.RSSI()); Serial.println(" dBm");
+            return true;
+        }
+        Serial.println("[WARN] No se pudo conectar con esas credenciales.");
+        WiFi.disconnect(false);
+        return false;
+    };
+
+    bool connected = false;
+    if (hadFile && ssid.length() > 0) {
+        connected = tryConnect(ssid, password, "guardadas");
+    }
+    if (!connected) {
+        // Intento por defecto
+        connected = tryConnect(String(DEFAULT_WIFI_SSID), String(DEFAULT_WIFI_PASSWORD), "por defecto");
+        if (connected && !hadFile) {
+            // Guardar para futuros reinicios
+            File wf = LittleFS.open("/WifiConfig.txt", "w");
+            if (wf) { wf.println(DEFAULT_WIFI_SSID); wf.println(DEFAULT_WIFI_PASSWORD); wf.close(); }
+        }
     }
 }
 
@@ -846,18 +896,35 @@ String loadMeasurements() {
 
 // Guarda TODO el historial actual en archivo (sobrescribe)
 void saveMeasurementFile(const String& allMeasurementsString) {
-    File file = LittleFS.open("/Measurements.txt", "w");
-    if (!file) {
-        Serial.println("[ERROR] No se pudo abrir 'Measurements.txt' para escritura.");
+    // Escribir de forma atómica usando archivo temporal y rename
+    const char* tmpPath = "/Measurements.tmp";
+    const char* finalPath = "/Measurements.txt";
+
+    File tmp = LittleFS.open(tmpPath, "w");
+    if (!tmp) {
+        Serial.println("[ERROR] No se pudo abrir archivo temporal para escritura.");
         return;
     }
-    size_t bytesWritten = file.print(allMeasurementsString);
-    file.close();
+    size_t bytesWritten = tmp.print(allMeasurementsString);
+    tmp.flush();
+    tmp.close();
     if (bytesWritten != allMeasurementsString.length()) {
-         Serial.println("[ERROR] Error al escribir historial completo en 'Measurements.txt'. Bytes esperados: " + String(allMeasurementsString.length()) + ", escritos: " + String(bytesWritten));
-    } else {
-         Serial.println("[INFO] Historial guardado en archivo (" + String(bytesWritten) + " bytes).");
+        Serial.println("[ERROR] Error al escribir historial completo en temporal. Abortando reemplazo.");
+        LittleFS.remove(tmpPath);
+        return;
     }
+    // Reemplazo atómico: borrar final y renombrar temporal
+    if (LittleFS.exists(finalPath)) {
+        LittleFS.remove(finalPath);
+        yield();
+    }
+    if (!LittleFS.rename(tmpPath, finalPath)) {
+        Serial.println("[ERROR] Falló rename de temporal a Measurements.txt");
+        // Si falla rename, intentar limpieza del temporal
+        LittleFS.remove(tmpPath);
+        return;
+    }
+    Serial.println("[INFO] Historial guardado en archivo (reemplazo atómico).");
 }
 
 // Parsea string de historial (formato {j1},{j2},..) en array
@@ -885,6 +952,7 @@ int parseData(String input, String output[]) {
         while(startIndex < input.length() && isspace(input.charAt(startIndex))) {
              startIndex++; // Skip whitespace
         }
+        if ((count % 20) == 0) { yield(); }
     }
     if (count >= MAX_JSON_OBJECTS) {
        Serial.println("[PARSE WARN] Se alcanzó el límite MAX_JSON_OBJECTS durante el parseo.");
@@ -908,6 +976,7 @@ String arrayToString(String array[], size_t arraySize) {
             // Loguear si hay un elemento inválido en el array que no sea vacío
             Serial.print("[ARRAY2STR WARN] Ignorando elemento inválido en índice "); Serial.print(i); Serial.print(": "); Serial.println(array[i]);
         }
+        if ((i % 20) == 0) { yield(); }
     }
     return result;
 }
@@ -924,18 +993,53 @@ void saveMeasurement(const String& jsonString) {
 
     if (jsonIndex < MAX_JSON_OBJECTS) {
         measurements[jsonIndex++] = jsonString;
+        // Modo eficiente: anexar al archivo existente con separador si corresponde
+        appendMeasurementToFile(jsonString);
     } else {
         // Array lleno, desplazar todos los elementos una posición hacia la izquierda
         Serial.println("[WARN] Array mediciones lleno. Desplazando historial...");
         for (int i = 0; i < MAX_JSON_OBJECTS - 1; i++) {
             measurements[i] = measurements[i + 1];
+            if ((i % 20) == 0) { yield(); }
         }
         // Añadir la nueva medición al final
         measurements[MAX_JSON_OBJECTS - 1] = jsonString;
         // jsonIndex ya está en MAX_JSON_OBJECTS, no necesita incrementarse
+        // Reescribir archivo completo de forma atómica solo cuando se alcanza el límite
+        saveMeasurementFile(arrayToString(measurements, jsonIndex));
     }
-    // Guardar el estado actual completo del array en el archivo
-    saveMeasurementFile(arrayToString(measurements, jsonIndex));
+}
+
+// Añade una medición al final del archivo, insertando coma si hay contenido previo
+void appendMeasurementToFile(const String& jsonString) {
+    const char* path = "/Measurements.txt";
+    bool addComma = false;
+    if (LittleFS.exists(path)) {
+        File rf = LittleFS.open(path, "r");
+        if (rf) {
+            size_t sz = rf.size();
+            addComma = (sz > 0);
+            rf.close();
+        }
+    }
+    File af = LittleFS.open(path, "a");
+    if (!af) {
+        Serial.println("[ERROR] No se pudo abrir 'Measurements.txt' en modo append. Reintentando con reescritura completa.");
+        // Fallback: reescribir completo
+        saveMeasurementFile(arrayToString(measurements, jsonIndex));
+        return;
+    }
+    if (addComma) {
+        af.print(",");
+    }
+    size_t w1 = af.print(jsonString);
+    af.flush();
+    af.close();
+    if (w1 != jsonString.length()) {
+        Serial.println("[ERROR] Fallo al anexar medición (bytes incompletos). Se intentará reparar en próximo arranque.");
+    } else {
+        Serial.println("[INFO] Medición anexada al archivo.");
+    }
 }
 
 // Formatea array de historial a JSON Array String "[{j1},{j2},..]"
@@ -951,6 +1055,7 @@ void formatMeasurementsToString(String& formattedString) {
             formattedString += measurements[i]; // Añadir el objeto JSON
             first = false;
         }
+        if ((i % 20) == 0) { yield(); }
     }
     formattedString += "]"; // Cerrar array JSON
 }
@@ -1283,6 +1388,8 @@ void handleData() {
         doc["wifiRSSI"] = 0;
         doc["wifiStatus"] = "Disconnected";
     }
+    doc["deviceHostname"] = (mdnsAdvertisedName.length() ? mdnsAdvertisedName : String(HOSTNAME));
+    doc["mdnsName"] = String((const char*)doc["deviceHostname"]) + ".local";
     doc["freeHeap"] = ESP.getFreeHeap();
     doc["measurementInterval"] = measurementInterval; // Informar intervalo configurado
 
@@ -1378,11 +1485,13 @@ void handleConnectWifi() {
 
     Serial.print("[ACCION] Intentando conectar (manual, sin guardar): '"); Serial.print(ssid); Serial.println("'...");
 
-    // Poner en modo STA si no lo está ya
+    // Preparar hostname único y poner en modo STA
     if (WiFi.getMode() != WIFI_STA) {
         WiFi.mode(WIFI_STA);
         delay(100); // Pequeña pausa para que el modo cambie
     }
+    actualHostname = String(HOSTNAME) + "-" + String(ESP.getChipId() & 0xFFF, HEX);
+    WiFi.hostname(actualHostname);
     WiFi.begin(ssid.c_str(), password.c_str());
 
     // Esperar conexión (máximo ~15 segundos)
@@ -1400,13 +1509,8 @@ void handleConnectWifi() {
         dnsServer.stop(); // Detener DNS si estaba en modo AP
         server.send(200, "application/json", "{\"status\":\"success\", \"ip\":\"" + WiFi.localIP().toString() + "\"}");
         
-        // *** INICIAR MDNS ***
-        if (MDNS.begin("greennanny2")) {
-            Serial.println("[INFO] Servidor mDNS iniciado tras conexión manual. Accede en http://greennanny.local");
-            MDNS.addService("http", "tcp", 80);
-        } else {
-            Serial.println("[ERROR] No se pudo iniciar el servidor mDNS.");
-        }
+        // *** INICIAR mDNS/NBNS (manual) con nombres secuenciales ***
+        startNameServices();
 
         // Intentar sincronizar NTP ahora que hay conexión
         syncNtpTime(); // Intentar sincronizar ahora
@@ -1437,8 +1541,10 @@ void sendFinalInstructionsPage(ESP8266WebServer& server) {
     server.send(200, "text/html", ""); // Envío inicial vacío
 
     // Envío del contenido HTML exacto que solicitaste, con la sintaxis corregida.
-    server.sendContent(
-        "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
+    String preferred = mdnsAdvertisedName.length()? mdnsAdvertisedName : String(HOSTNAME);
+    String urlLocal = String("http://") + preferred + ".local";
+    String urlNbns  = String("http://") + preferred + "/";
+    String html = "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
         "<title>Conectando... - Green Nanny</title>"
         "<link href=\"https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css\" rel=\"stylesheet\">"
         "<style>"
@@ -1446,11 +1552,12 @@ void sendFinalInstructionsPage(ESP8266WebServer& server) {
         ".container{max-width:500px;}"
         ".card{background-color:#333;border:1px solid #444;border-radius:10px;padding:30px;}"
         "</style></head><body><div class=\"container\"><div class=\"card\">"
-        "<p>Haga clic en el bot&oacute;n de abajo para acceder al dashboard.</p>"
-        "<a href=\"http://greennanny.local\" class=\"btn btn-success mt-4 w-100 fs-5\">Ir al Dashboard</a>"
-        "<p class=\"text-muted small mt-2\">Si el bot&oacute;n no funciona, escriba en su navegador: <strong>http://greennanny.local</strong></p>"
-        "</div></div></body></html>"
-    );
+        "<p>Haga clic en el bot&oacute;n de abajo para acceder al dashboard.</p>";
+    html += String("<a href=\"") + urlLocal + "\" class=\\\"btn btn-success mt-4 w-100 fs-5\\\">Ir al Dashboard</a>";
+    html += String("<p class=\\\"text-muted small mt-2\\\">Si el bot&oacute;n no funciona, pruebe tambi&eacute;n: <strong>") + urlNbns + "</strong> (Windows)</p>";
+    html += "<p class=\\\"text-muted small\\\">O use la IP del dispositivo (desde su router/DHCP).</p>";
+    html += "</div></div></body></html>";
+    server.sendContent(html);
 
     server.sendContent(""); // Finalizar el envío
 }

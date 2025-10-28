@@ -1,5 +1,5 @@
 
-const BASE_URL = `http://${window.location.hostname}`;
+const BASE_URL = `${location.protocol}//${window.location.hostname}`;
 const REFRESH_INTERVAL = 15000;
 const CHART_MAX_POINTS = 180;
 const HISTORY_MAX_ENTRIES = 150;
@@ -8,6 +8,78 @@ const FETCH_TIMEOUT = 20000;
 const MS_PER_HOUR = 3600 * 1000;
 const MS_PER_DAY = 24 * MS_PER_HOUR;
 const UPDATE_FLASH_DURATION = 700;
+
+// --- Simple device buttons (Nanny 1/2/3) ---
+function hostForIndex(idx) {
+    const base = 'greennanny';
+    return idx === 1 ? `${base}.local` : `${base}${idx}.local`;
+}
+
+async function probeHostAvailable(host, timeout = 1200) {
+    const urls = [`${location.protocol}//${host}/data`, `${location.protocol}//${host.replace(/\.local$/,'')}/data`];
+    for (const url of urls) {
+        try {
+            const controller = new AbortController();
+            const to = setTimeout(() => controller.abort(), timeout);
+            const res = await fetch(url, { signal: controller.signal, cache: 'no-store' });
+            clearTimeout(to);
+            if (res.ok) {
+                const j = await res.json();
+                return { ok: true, ip: j.deviceIP || null };
+            }
+        } catch (_) { /* try next */ }
+    }
+    return { ok: false, ip: null };
+}
+
+function setBtnState(btn, available, isCurrent, ipText) {
+    if (!btn) return;
+    btn.disabled = !available || isCurrent;
+    btn.classList.toggle('btn-success', available && isCurrent);
+    btn.classList.toggle('btn-outline-light', !isCurrent);
+    btn.classList.toggle('btn-outline-success', available && !isCurrent);
+    if (ipText) {
+        const baseLabel = btn.dataset.baseLabel || btn.textContent;
+        btn.dataset.baseLabel = baseLabel;
+        btn.textContent = `${baseLabel} ${ipText ? '(' + ipText + ')' : ''}`.trim();
+    }
+}
+
+function wireBtnNav(btn, targetHost) {
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+        location.href = `${location.protocol}//${targetHost}/index.html`;
+    });
+}
+
+async function updateDeviceButtons() {
+    const currentHost = window.location.hostname;
+    for (let i = 1; i <= 3; i++) {
+        const host = hostForIndex(i);
+        const el = document.getElementById(`btnDev${i}`);
+        const isCurrent = (currentHost === host || currentHost === host.replace(/\.local$/,''));
+        if (isCurrent) {
+            const ip = (window.lastCoreData && window.lastCoreData.deviceIP) ? window.lastCoreData.deviceIP : null;
+            setBtnState(el, true, true, ip);
+        } else {
+            const res = await probeHostAvailable(host, 900);
+            setBtnState(el, res.ok, false, res.ip);
+        }
+    }
+}
+
+function initDeviceButtons() {
+    const b1 = document.getElementById('btnDev1');
+    const b2 = document.getElementById('btnDev2');
+    const b3 = document.getElementById('btnDev3');
+    wireBtnNav(b1, hostForIndex(1));
+    wireBtnNav(b2, hostForIndex(2));
+    wireBtnNav(b3, hostForIndex(3));
+    updateDeviceButtons();
+    setInterval(updateDeviceButtons, 30000); // refrescar cada 30s
+}
+
+// (Device discovery & switching removed per request; dashboard targets current host only)
 
 // --- Element Selectors (Cached) ---
 const El = {
@@ -757,6 +829,7 @@ async function updateUI() {
         if (dataRes.status === 'fulfilled' && dataRes.value) {
             const coreData = dataRes.value;
             lastCoreData = coreData; // Store current data for other functions
+            try { window.lastCoreData = coreData; } catch (_) {}
 
             // Update page title dynamically
             if (El.pageTitle) El.pageTitle.textContent = `Green Nanny ${coreData.pumpStatus ? '💧' : '🌿'}`;
@@ -1392,6 +1465,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     showGlobalLoader(true); // Show global loader bar during init
 
     if (!El.measurementChartCtx) console.warn("Chart canvas context ('measurementChart') not found.");
+
+    // Initialize device jump buttons
+    initDeviceButtons();
 
     // Set up all event listeners for buttons, forms, etc.
     setupEventListeners();
