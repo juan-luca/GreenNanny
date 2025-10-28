@@ -874,7 +874,72 @@
 
                     <hr/>
 
-                    <!-- Row 6: Stage Configuration (NEW) -->
+                    <!-- Row 6: Fan & Extractor Control (NEW) -->
+                    <section class="row" aria-label="Fan and Extractor Controls">
+                         <div class="col-12"><h2 class="h4 mb-3">Fan & Extractor Control</h2></div>
+                        <div class="col-lg-6 d-flex flex-column gap-3">
+                             <fieldset class="widget-dark mb-0">
+                                 <legend class="widget-title">
+                                      <i class="fas fa-fan me-2 opacity-75" aria-hidden="true"></i>Manual Controls
+                                 </legend>
+                                <div class="widget-body">
+                                    <div class="mb-3">
+                                        <strong>Fan Status:</strong> <span id="fanStatusIndicator" class="badge bg-secondary ms-2"><span class="loader loader-sm" role="status"></span></span>
+                                    </div>
+                                    <div class="action-button-group mb-3">
+                                        <button id="activateFan" class="btn btn-success btn-sm"><i class="fas fa-play-circle" aria-hidden="true"></i> Turn ON Fan</button>
+                                        <button id="deactivateFan" class="btn btn-warning btn-sm"><i class="fas fa-stop-circle" aria-hidden="true"></i> Turn OFF Fan</button>
+                                    </div>
+                                    <hr class="my-3">
+                                    <div class="mb-3">
+                                        <strong>Extractor Status:</strong> <span id="extractorStatusIndicator" class="badge bg-secondary ms-2"><span class="loader loader-sm" role="status"></span></span>
+                                    </div>
+                                    <div class="action-button-group">
+                                        <button id="activateExtractor" class="btn btn-success btn-sm"><i class="fas fa-play-circle" aria-hidden="true"></i> Turn ON Extractor</button>
+                                        <button id="deactivateExtractor" class="btn btn-warning btn-sm"><i class="fas fa-stop-circle" aria-hidden="true"></i> Turn OFF Extractor</button>
+                                    </div>
+                                </div>
+                            </fieldset>
+                        </div>
+
+                        <div class="col-lg-6">
+                            <fieldset class="widget-dark h-100">
+                                <legend class="widget-title"><i class="fas fa-sliders-h me-2 opacity-75" aria-hidden="true"></i>Automatic Thresholds</legend>
+                                <div class="widget-body">
+                                    <form id="thresholdsForm">
+                                        <div class="row g-2 mb-2">
+                                            <div class="col-12"><small class="text-muted"><i class="fas fa-fan me-1"></i>Fan Activation</small></div>
+                                            <div class="col-6">
+                                                <label for="fanTempThreshold" class="form-label small mb-1">Temp (°C):</label>
+                                                <input type="number" id="fanTempThreshold" class="form-control form-control-sm" min="0" max="50" step="0.1" placeholder="28.0" required/>
+                                            </div>
+                                            <div class="col-6">
+                                                <label for="fanHumThreshold" class="form-label small mb-1">Humidity (%):</label>
+                                                <input type="number" id="fanHumThreshold" class="form-control form-control-sm" min="0" max="100" step="1" placeholder="70" required/>
+                                            </div>
+                                        </div>
+                                        <div class="row g-2 mb-3">
+                                            <div class="col-12"><small class="text-muted"><i class="fas fa-wind me-1"></i>Extractor Activation</small></div>
+                                            <div class="col-6">
+                                                <label for="extractorTempThreshold" class="form-label small mb-1">Temp (°C):</label>
+                                                <input type="number" id="extractorTempThreshold" class="form-control form-control-sm" min="0" max="50" step="0.1" placeholder="32.0" required/>
+                                            </div>
+                                            <div class="col-6">
+                                                <label for="extractorHumThreshold" class="form-label small mb-1">Humidity (%):</label>
+                                                <input type="number" id="extractorHumThreshold" class="form-control form-control-sm" min="0" max="100" step="1" placeholder="85" required/>
+                                            </div>
+                                        </div>
+                                        <button type="submit" class="btn btn-primary btn-sm w-100"><i class="fas fa-save me-1" aria-hidden="true"></i>Save Thresholds</button>
+                                        <div class="form-text mt-2">Devices activate automatically when temp OR humidity exceeds threshold.</div>
+                                    </form>
+                                </div>
+                            </fieldset>
+                        </div>
+                    </section>
+
+                    <hr/>
+
+                    <!-- Row 7: Stage Configuration (was Row 6) -->
                     <section class="row" aria-labelledby="stage-config-title">
                         <div class="col-12">
                             <h2 class="h4 mb-3" id="stage-config-title">Stage Configuration</h2>

@@ -30,9 +30,12 @@ const int  daylightOffset_sec = 0;         // nada de DST
 #define DHTPIN D2
 #define DHTTYPE DHT11
 #define BOMBA_PIN D3
+#define FAN_PIN D4          // Pin para ventilador
+#define EXTRACTOR_PIN D5    // Pin para turbina de extracción
 
 #define MAX_JSON_OBJECTS 500 // Max measurements to store
 #define STAGES_CONFIG_FILE "/stages_config.json" // File for custom stage config
+#define THRESHOLDS_CONFIG_FILE "/thresholds_config.json" // File for fan/extractor thresholds
 
 // RTC - REMOVED
 // RTC_DS1307 rtc;
@@ -94,6 +97,26 @@ bool pumpActivated = false;        // Flag: Is the pump currently ON?
 unsigned long lastSecondPrint = 0; // For printing debug seconds while pump is on
 int pumpSecondsCount = 0;          // Counter for debug seconds
 
+// Control de ventilador y turbina de extracción
+bool fanActivated = false;         // Flag: Is the fan currently ON?
+bool extractorActivated = false;   // Flag: Is the extractor currently ON?
+
+// Umbrales para activación automática de ventilador y turbina
+struct EnvironmentThresholds {
+    float fanTempOn;        // Temperatura para encender ventilador (°C)
+    float fanHumOn;         // Humedad para encender ventilador (%)
+    float extractorTempOn;  // Temperatura para encender turbina (°C)
+    float extractorHumOn;   // Humedad para encender turbina (%)
+};
+
+// Valores por defecto de umbrales
+EnvironmentThresholds thresholds = {
+    28.0,  // fanTempOn - ventilador se enciende si temp >= 28°C
+    70.0,  // fanHumOn - ventilador se enciende si humedad >= 70%
+    32.0,  // extractorTempOn - turbina se enciende si temp >= 32°C
+    85.0   // extractorHumOn - turbina se enciende si humedad >= 85%
+};
+
 // Intervalo de mediciones (en horas)
 int measurementInterval = 3; // Default 3 hours
 unsigned long nextMeasureTimestamp = 0; // Timestamp (millis) for next measurement check
@@ -130,6 +153,7 @@ void setup();
 void loop();
 void setupDHTSensor();
 void setupBomba();
+void setupFanAndExtractor();  // NEW: Setup for fan and extractor pins
 void setupServer();
 void startAPMode();
 bool syncNtpTime(); // PROTOTIPO NTP (Modified: no RTC interaction)
@@ -148,6 +172,18 @@ void controlIndependiente(); // Main automatic control logic (includes taking me
 void activatePump(unsigned long durationMs);
 void deactivatePump();
 void handlePumpControl(); // Manual pump control via API
+// Fan and Extractor Control (NEW)
+void activateFan();
+void deactivateFan();
+void activateExtractor();
+void deactivateExtractor();
+void handleFanControl();       // Manual fan control via API
+void handleExtractorControl(); // Manual extractor control via API
+void controlFanAndExtractor(); // Automatic control based on thresholds
+void loadThresholds();         // Load thresholds from file
+void saveThresholds();         // Save thresholds to file
+void handleGetThresholds();    // API endpoint to get thresholds
+void handleSetThresholds();    // API endpoint to set thresholds
 // Stage Control
 int getCurrentStageIndex(unsigned long daysElapsed); // Accepts daysElapsed as arg
 void loadManualStage();
@@ -330,11 +366,17 @@ void setup() {
     // Configurar el pin de la bomba
     setupBomba();
 
+    // Configurar pines de ventilador y turbina
+    setupFanAndExtractor();
+
     // Inicializar el sensor DHT
     setupDHTSensor();
 
     // ***** NEW: Load custom stage configuration *****
     loadStagesConfig();
+
+    // ***** Load fan/extractor thresholds *****
+    loadThresholds();
 
     // Cargar mediciones previas
     {
@@ -509,6 +551,9 @@ void loop() {
         Serial.println(nextMeasureTimestamp);
     }
 
+    // --- Control automático de ventilador y turbina basado en umbrales ---
+    controlFanAndExtractor();
+
     // --- Sincronización NTP Periódica ---
     if (WiFi.status() == WL_CONNECTED && (!ntpTimeSynchronized || (currentMillis - lastNtpSyncAttempt >= ntpSyncInterval))) {
         if (!ntpTimeSynchronized) {
@@ -599,6 +644,17 @@ void setupBomba() {
     digitalWrite(BOMBA_PIN, LOW);
     pumpActivated = false;
     pumpAutoOff = false;
+}
+
+// Configura los pines de ventilador y turbina
+void setupFanAndExtractor() {
+    Serial.println("[SETUP] Configurando pines de ventilador (D4) y turbina (D5)...");
+    pinMode(FAN_PIN, OUTPUT);
+    pinMode(EXTRACTOR_PIN, OUTPUT);
+    digitalWrite(FAN_PIN, LOW);
+    digitalWrite(EXTRACTOR_PIN, LOW);
+    fanActivated = false;
+    extractorActivated = false;
 }
 
 // Obtiene la humedad (real o simulada)
@@ -703,6 +759,127 @@ void deactivatePump() {
         Serial.print("[INFO] Bomba estuvo activa por ~"); Serial.print(pumpSecondsCount); Serial.println("s.");
     }
     pumpSecondsCount = 0;
+}
+
+// Activa el ventilador
+void activateFan() {
+    if (fanActivated) return;
+    Serial.println("[ACCION] Activando ventilador.");
+    digitalWrite(FAN_PIN, HIGH);
+    fanActivated = true;
+}
+
+// Desactiva el ventilador
+void deactivateFan() {
+    if (!fanActivated) return;
+    Serial.println("[ACCION] Desactivando ventilador.");
+    digitalWrite(FAN_PIN, LOW);
+    fanActivated = false;
+}
+
+// Activa la turbina de extracción
+void activateExtractor() {
+    if (extractorActivated) return;
+    Serial.println("[ACCION] Activando turbina de extracción.");
+    digitalWrite(EXTRACTOR_PIN, HIGH);
+    extractorActivated = true;
+}
+
+// Desactiva la turbina de extracción
+void deactivateExtractor() {
+    if (!extractorActivated) return;
+    Serial.println("[ACCION] Desactivando turbina de extracción.");
+    digitalWrite(EXTRACTOR_PIN, LOW);
+    extractorActivated = false;
+}
+
+// Control automático del ventilador y turbina basado en umbrales
+void controlFanAndExtractor() {
+    float temp = getTemperature();
+    float hum = getHumidity();
+    
+    // Validar lecturas
+    if (temp <= -90.0 || hum < 0.0) {
+        // Sensores no válidos, no cambiar estado
+        return;
+    }
+
+    // Control del ventilador
+    if (temp >= thresholds.fanTempOn || hum >= thresholds.fanHumOn) {
+        if (!fanActivated) activateFan();
+    } else {
+        // Agregar histéresis de 2 unidades para evitar oscilaciones
+        if (temp < (thresholds.fanTempOn - 2.0) && hum < (thresholds.fanHumOn - 2.0)) {
+            if (fanActivated) deactivateFan();
+        }
+    }
+
+    // Control de la turbina de extracción
+    if (temp >= thresholds.extractorTempOn || hum >= thresholds.extractorHumOn) {
+        if (!extractorActivated) activateExtractor();
+    } else {
+        // Agregar histéresis de 2 unidades para evitar oscilaciones
+        if (temp < (thresholds.extractorTempOn - 2.0) && hum < (thresholds.extractorHumOn - 2.0)) {
+            if (extractorActivated) deactivateExtractor();
+        }
+    }
+}
+
+// Carga umbrales desde archivo
+void loadThresholds() {
+    if (LittleFS.exists(THRESHOLDS_CONFIG_FILE)) {
+        File file = LittleFS.open(THRESHOLDS_CONFIG_FILE, "r");
+        if (!file) {
+            Serial.println("[ERROR] No se pudo abrir archivo de umbrales.");
+            return;
+        }
+
+        StaticJsonDocument<256> doc;
+        DeserializationError error = deserializeJson(doc, file);
+        file.close();
+
+        if (error) {
+            Serial.print("[ERROR] Error al parsear JSON de umbrales: ");
+            Serial.println(error.c_str());
+            return;
+        }
+
+        thresholds.fanTempOn = doc["fanTempOn"] | thresholds.fanTempOn;
+        thresholds.fanHumOn = doc["fanHumOn"] | thresholds.fanHumOn;
+        thresholds.extractorTempOn = doc["extractorTempOn"] | thresholds.extractorTempOn;
+        thresholds.extractorHumOn = doc["extractorHumOn"] | thresholds.extractorHumOn;
+
+        Serial.println("[INFO] Umbrales cargados desde archivo.");
+    } else {
+        Serial.println("[INFO] No existe archivo de umbrales. Usando valores por defecto.");
+        saveThresholds(); // Guardar valores por defecto
+    }
+}
+
+// Guarda umbrales en archivo
+void saveThresholds() {
+    StaticJsonDocument<256> doc;
+    doc["fanTempOn"] = thresholds.fanTempOn;
+    doc["fanHumOn"] = thresholds.fanHumOn;
+    doc["extractorTempOn"] = thresholds.extractorTempOn;
+    doc["extractorHumOn"] = thresholds.extractorHumOn;
+
+    File file = LittleFS.open(THRESHOLDS_CONFIG_FILE, "w");
+    if (!file) {
+        Serial.println("[ERROR] No se pudo abrir archivo de umbrales para escritura.");
+        return;
+    }
+
+    size_t bytesWritten = serializeJson(doc, file);
+    file.close();
+
+    if (bytesWritten == 0) {
+        Serial.println("[ERROR] Error al escribir umbrales en archivo.");
+    } else {
+        Serial.print("[INFO] Umbrales guardados en archivo (");
+        Serial.print(bytesWritten);
+        Serial.println(" bytes).");
+    }
 }
 
 // Carga el intervalo de medición desde archivo
@@ -1361,6 +1538,10 @@ void handleData() {
         doc["pumpRemainingSec"] = 0;
     }
 
+    // Estado Ventilador y Turbina
+    doc["fanStatus"] = fanActivated;
+    doc["extractorStatus"] = extractorActivated;
+
     // Tiempo
     doc["elapsedTime"] = elapsedSeconds; // Tiempo transcurrido desde primer sync NTP (segundos)
     doc["currentTime"] = epochNowMs;     // Hora actual del sistema (epoch ms UTC, 0 if not synced)
@@ -1715,6 +1896,130 @@ void handlePumpControl() {
         server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid action specified. Use 'on' or 'off'.\"}");
     }
 }
+
+// Handler para /controlFan - Control manual del ventilador
+void handleFanControl() {
+    Serial.println("[HTTP] Solicitud /controlFan (POST).");
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+
+    if (!server.hasArg("action")) {
+        server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Missing 'action' parameter\"}");
+        return;
+    }
+    String action = server.arg("action");
+
+    if (action.equalsIgnoreCase("on")) {
+        Serial.println("[ACCION] Encendiendo ventilador (manual HTTP).");
+        activateFan();
+        server.send(200, "application/json", "{\"status\":\"success\", \"fanStatus\":\"on\"}");
+    } else if (action.equalsIgnoreCase("off")) {
+        Serial.println("[ACCION] Apagando ventilador (manual HTTP).");
+        deactivateFan();
+        server.send(200, "application/json", "{\"status\":\"success\", \"fanStatus\":\"off\"}");
+    } else {
+        Serial.print("[ERROR] Acción de ventilador inválida: "); Serial.println(action);
+        server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid action. Use 'on' or 'off'.\"}");
+    }
+}
+
+// Handler para /controlExtractor - Control manual de la turbina
+void handleExtractorControl() {
+    Serial.println("[HTTP] Solicitud /controlExtractor (POST).");
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+
+    if (!server.hasArg("action")) {
+        server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Missing 'action' parameter\"}");
+        return;
+    }
+    String action = server.arg("action");
+
+    if (action.equalsIgnoreCase("on")) {
+        Serial.println("[ACCION] Encendiendo turbina (manual HTTP).");
+        activateExtractor();
+        server.send(200, "application/json", "{\"status\":\"success\", \"extractorStatus\":\"on\"}");
+    } else if (action.equalsIgnoreCase("off")) {
+        Serial.println("[ACCION] Apagando turbina (manual HTTP).");
+        deactivateExtractor();
+        server.send(200, "application/json", "{\"status\":\"success\", \"extractorStatus\":\"off\"}");
+    } else {
+        Serial.print("[ERROR] Acción de turbina inválida: "); Serial.println(action);
+        server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Invalid action. Use 'on' or 'off'.\"}");
+    }
+}
+
+// Handler para /getThresholds - Obtener umbrales actuales
+void handleGetThresholds() {
+    Serial.println("[HTTP] Solicitud /getThresholds (GET).");
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+
+    StaticJsonDocument<256> doc;
+    doc["fanTempOn"] = thresholds.fanTempOn;
+    doc["fanHumOn"] = thresholds.fanHumOn;
+    doc["extractorTempOn"] = thresholds.extractorTempOn;
+    doc["extractorHumOn"] = thresholds.extractorHumOn;
+
+    String response;
+    serializeJson(doc, response);
+    server.send(200, "application/json", response);
+}
+
+// Handler para /setThresholds - Configurar umbrales
+void handleSetThresholds() {
+    Serial.println("[HTTP] Solicitud /setThresholds (POST).");
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+
+    if (!server.hasArg("plain")) {
+        server.send(400, "text/plain", "Bad Request: Missing body");
+        return;
+    }
+
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, server.arg("plain"));
+    if (error) {
+        server.send(400, "text/plain", "Bad Request: Invalid JSON");
+        return;
+    }
+
+    // Actualizar umbrales si están presentes y son válidos
+    bool updated = false;
+    if (doc.containsKey("fanTempOn") && doc["fanTempOn"].is<float>()) {
+        float val = doc["fanTempOn"];
+        if (val >= 0 && val <= 50) {
+            thresholds.fanTempOn = val;
+            updated = true;
+        }
+    }
+    if (doc.containsKey("fanHumOn") && doc["fanHumOn"].is<float>()) {
+        float val = doc["fanHumOn"];
+        if (val >= 0 && val <= 100) {
+            thresholds.fanHumOn = val;
+            updated = true;
+        }
+    }
+    if (doc.containsKey("extractorTempOn") && doc["extractorTempOn"].is<float>()) {
+        float val = doc["extractorTempOn"];
+        if (val >= 0 && val <= 50) {
+            thresholds.extractorTempOn = val;
+            updated = true;
+        }
+    }
+    if (doc.containsKey("extractorHumOn") && doc["extractorHumOn"].is<float>()) {
+        float val = doc["extractorHumOn"];
+        if (val >= 0 && val <= 100) {
+            thresholds.extractorHumOn = val;
+            updated = true;
+        }
+    }
+
+    if (updated) {
+        saveThresholds();
+        server.send(200, "application/json", "{\"status\":\"success\", \"message\":\"Thresholds updated\"}");
+    } else {
+        server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"No valid parameters provided\"}");
+    }
+}
+
 // Handler para /setManualStage - Establecer etapa manual
 void handleSetManualStage() {
     Serial.println("[HTTP] Solicitud /setManualStage (POST).");
@@ -1946,6 +2251,10 @@ void setupServer() {
     // --- Endpoints API POST (Modificar estado o configuración) ---
     server.on("/setMeasurementInterval", HTTP_POST, handleMeasurementInterval); // Establecer intervalo
     server.on("/controlPump", HTTP_POST, handlePumpControl);             // Encender/apagar bomba manualmente
+    server.on("/controlFan", HTTP_POST, handleFanControl);               // Encender/apagar ventilador manualmente
+    server.on("/controlExtractor", HTTP_POST, handleExtractorControl);   // Encender/apagar turbina manualmente
+    server.on("/setThresholds", HTTP_POST, handleSetThresholds);         // Configurar umbrales de temp/humedad
+    server.on("/getThresholds", HTTP_GET, handleGetThresholds);          // Obtener umbrales actuales
     server.on("/setManualStage", HTTP_POST, handleSetManualStage);       // Activar control manual de etapa
     server.on("/resetManualStage", HTTP_POST, handleResetManualStage);   // Desactivar control manual
     server.on("/updateStage", HTTP_POST, handleUpdateStage);             // Modificar parámetros de una etapa

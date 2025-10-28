@@ -128,6 +128,18 @@ const El = {
     takeMeasurementBtn: document.getElementById('takeMeasurement'),
     clearMeasurementsBtn: document.getElementById('clearMeasurements'),
     restartSystemBtn: document.getElementById('restartSystem'),
+    // Fan & Extractor Controls (NEW)
+    fanStatusIndicator: document.getElementById('fanStatusIndicator'),
+    extractorStatusIndicator: document.getElementById('extractorStatusIndicator'),
+    activateFanBtn: document.getElementById('activateFan'),
+    deactivateFanBtn: document.getElementById('deactivateFan'),
+    activateExtractorBtn: document.getElementById('activateExtractor'),
+    deactivateExtractorBtn: document.getElementById('deactivateExtractor'),
+    thresholdsForm: document.getElementById('thresholdsForm'),
+    fanTempThreshold: document.getElementById('fanTempThreshold'),
+    fanHumThreshold: document.getElementById('fanHumThreshold'),
+    extractorTempThreshold: document.getElementById('extractorTempThreshold'),
+    extractorHumThreshold: document.getElementById('extractorHumThreshold'),
     // Global & Footer
     toastContainer: document.getElementById('toastContainer'),
     globalLoader: document.getElementById('globalLoader'),
@@ -750,6 +762,26 @@ function updatePumpStatusIndicator(isOn) {
     if(El.deactivatePumpBtn) El.deactivatePumpBtn.disabled = !isOn;
 }
 
+function updateFanStatusIndicator(isOn) {
+    if (!El.fanStatusIndicator) return;
+    const iconClass = isOn ? 'fa-fan text-success' : 'fa-fan text-secondary';
+    El.fanStatusIndicator.innerHTML = `<i class="fas ${iconClass}" aria-hidden="true"></i> ${isOn ? 'ON' : 'OFF'}`;
+    El.fanStatusIndicator.className = `badge ${isOn ? 'bg-success' : 'bg-secondary'} ms-2`;
+    // Update button states
+    if(El.activateFanBtn) El.activateFanBtn.disabled = isOn;
+    if(El.deactivateFanBtn) El.deactivateFanBtn.disabled = !isOn;
+}
+
+function updateExtractorStatusIndicator(isOn) {
+    if (!El.extractorStatusIndicator) return;
+    const iconClass = isOn ? 'fa-wind text-success' : 'fa-wind text-secondary';
+    El.extractorStatusIndicator.innerHTML = `<i class="fas ${iconClass}" aria-hidden="true"></i> ${isOn ? 'ON' : 'OFF'}`;
+    El.extractorStatusIndicator.className = `badge ${isOn ? 'bg-success' : 'bg-secondary'} ms-2`;
+    // Update button states
+    if(El.activateExtractorBtn) El.activateExtractorBtn.disabled = isOn;
+    if(El.deactivateExtractorBtn) El.deactivateExtractorBtn.disabled = !isOn;
+}
+
 function updateWiFiStatusIndicator(rssi) {
      // Ensure both the outer wrapper and inner content elements exist
      if (!El.wifiStatusWrapper || !El.wifiStatusContent) {
@@ -859,6 +891,8 @@ async function updateUI() {
 
             // Update Pump & WiFi Status indicators
             updatePumpStatusIndicator(coreData.pumpStatus ?? false);
+            updateFanStatusIndicator(coreData.fanStatus ?? false);
+            updateExtractorStatusIndicator(coreData.extractorStatus ?? false);
             updateWiFiStatusIndicator(coreData.wifiRSSI);
 
             // Update Device Name/IP display
@@ -1000,6 +1034,22 @@ async function fetchAndUpdateIntervalDisplay() {
          El.currentInterval.textContent = 'Err'; // Indicate error in UI
          El.intervalInput.placeholder = 'Error loading interval';
      }
+}
+
+async function fetchAndUpdateThresholdsDisplay() {
+    if (!El.fanTempThreshold || !El.fanHumThreshold || !El.extractorTempThreshold || !El.extractorHumThreshold) return;
+    try {
+        const thresholdsData = await fetchData('/getThresholds');
+        if (thresholdsData) {
+            El.fanTempThreshold.value = thresholdsData.fanTempOn ?? 28.0;
+            El.fanHumThreshold.value = thresholdsData.fanHumOn ?? 70;
+            El.extractorTempThreshold.value = thresholdsData.extractorTempOn ?? 32.0;
+            El.extractorHumThreshold.value = thresholdsData.extractorHumOn ?? 85;
+        }
+    } catch (error) {
+        console.error("Failed to fetch thresholds:", error);
+        showToast('Error loading thresholds', 'warning');
+    }
 }
 
 async function fetchStagesInfo() {
@@ -1345,6 +1395,106 @@ El.activatePumpBtn?.addEventListener('click', async () => {
         // Do NOT re-enable controls or remove overlay here. User must refresh.
     });
 
+    // --- Fan Control Buttons (NEW) ---
+    El.activateFanBtn?.addEventListener('click', async () => {
+        setLoadingState(El.activateFanBtn, true, "Starting...");
+        try {
+            const url = `${BASE_URL}/controlFan?action=on`;
+            const response = await fetch(url, { method: 'POST' });
+            if (!response.ok) throw new Error(`Command failed: ${response.status}`);
+            showToast('Fan activated.', 'success');
+            announceSRStatus('Fan turned on.');
+            await updateUI();
+        } catch (error) {
+            console.error("Error activating fan:", error);
+            showToast(error.message, 'error');
+            await updateUI();
+        }
+    });
+
+    El.deactivateFanBtn?.addEventListener('click', async () => {
+        setLoadingState(El.deactivateFanBtn, true, "Stopping...");
+        try {
+            const url = `${BASE_URL}/controlFan?action=off`;
+            const response = await fetch(url, { method: 'POST' });
+            if (!response.ok) throw new Error(`Command failed: ${response.status}`);
+            showToast('Fan deactivated.', 'success');
+            announceSRStatus('Fan turned off.');
+            await updateUI();
+        } catch (error) {
+            console.error("Error deactivating fan:", error);
+            showToast(error.message, 'error');
+            await updateUI();
+        }
+    });
+
+    // --- Extractor Control Buttons (NEW) ---
+    El.activateExtractorBtn?.addEventListener('click', async () => {
+        setLoadingState(El.activateExtractorBtn, true, "Starting...");
+        try {
+            const url = `${BASE_URL}/controlExtractor?action=on`;
+            const response = await fetch(url, { method: 'POST' });
+            if (!response.ok) throw new Error(`Command failed: ${response.status}`);
+            showToast('Extractor activated.', 'success');
+            announceSRStatus('Extractor turned on.');
+            await updateUI();
+        } catch (error) {
+            console.error("Error activating extractor:", error);
+            showToast(error.message, 'error');
+            await updateUI();
+        }
+    });
+
+    El.deactivateExtractorBtn?.addEventListener('click', async () => {
+        setLoadingState(El.deactivateExtractorBtn, true, "Stopping...");
+        try {
+            const url = `${BASE_URL}/controlExtractor?action=off`;
+            const response = await fetch(url, { method: 'POST' });
+            if (!response.ok) throw new Error(`Command failed: ${response.status}`);
+            showToast('Extractor deactivated.', 'success');
+            announceSRStatus('Extractor turned off.');
+            await updateUI();
+        } catch (error) {
+            console.error("Error deactivating extractor:", error);
+            showToast(error.message, 'error');
+            await updateUI();
+        }
+    });
+
+    // --- Thresholds Form (NEW) ---
+    El.thresholdsForm?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const data = {
+            fanTempOn: parseFloat(El.fanTempThreshold.value),
+            fanHumOn: parseFloat(El.fanHumThreshold.value),
+            extractorTempOn: parseFloat(El.extractorTempThreshold.value),
+            extractorHumOn: parseFloat(El.extractorHumThreshold.value)
+        };
+
+        // Validate
+        let valid = true;
+        if (isNaN(data.fanTempOn) || data.fanTempOn < 0 || data.fanTempOn > 50) valid = false;
+        if (isNaN(data.fanHumOn) || data.fanHumOn < 0 || data.fanHumOn > 100) valid = false;
+        if (isNaN(data.extractorTempOn) || data.extractorTempOn < 0 || data.extractorTempOn > 50) valid = false;
+        if (isNaN(data.extractorHumOn) || data.extractorHumOn < 0 || data.extractorHumOn > 100) valid = false;
+
+        if (!valid) {
+            showToast('Invalid threshold values. Check ranges.', 'warning');
+            return;
+        }
+
+        const button = El.thresholdsForm.querySelector('button[type="submit"]');
+        setLoadingState(button, true, "Saving...");
+        try {
+            await postData('/setThresholds', data);
+            showToast('Thresholds updated successfully.', 'success');
+            announceSRStatus('Thresholds configuration saved.');
+        } catch (error) {
+            /* Error handled by postData */
+        }
+        finally { setLoadingState(button, false); }
+    });
+
     // Refresh Stage Info Button (Stage Control Card)
     El.refreshStageBtn?.addEventListener('click', async () => {
         setLoadingState(El.refreshStageBtn, true, "Refreshing...");
@@ -1482,7 +1632,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         await updateUI(); // This populates widgets, history, stats, chart
         // 4. Populate controls that depend on initial data (like the manual stage selector)
         await populateStageSelector();
-        // 5. Initialize interactive elements like Bootstrap tooltips
+        // 5. Load thresholds into form inputs
+        await fetchAndUpdateThresholdsDisplay();
+        // 6. Initialize interactive elements like Bootstrap tooltips
         initTooltips();
 
         console.log("Initialization complete.");
