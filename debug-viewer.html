@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GreenNanny Debug Logs</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body {
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+        }
+        #logs-container {
+            background-color: #252526;
+            border-radius: 8px;
+            padding: 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            max-height: calc(100vh - 200px);
+            overflow-y: auto;
+        }
+        .log-line {
+            padding: 2px 0;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .log-error { color: #ff6b6b; }
+        .log-warn { color: #ffd93d; }
+        .log-success { color: #6bcf7f; }
+        .log-discord { color: #4dabf7; }
+        .log-info { color: #74c0fc; }
+        .log-default { color: #d4d4d4; }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 30px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .btn-refresh { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+        }
+        .btn-refresh:hover {
+            background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+        .status-online { background-color: #6bcf7f; }
+        .status-offline { background-color: #ff6b6b; animation: none; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid py-4">
+        <div class="header text-center text-white">
+            <h1><i class="fas fa-bug"></i> GreenNanny Debug Logs</h1>
+            <p class="mb-0">Monitor en tiempo real de logs del ESP8266</p>
+        </div>
+
+        <div class="row mb-3">
+            <div class="col-md-6">
+                <div class="card bg-dark text-white">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <span class="status-indicator status-offline" id="status-indicator"></span>
+                            <span id="connection-status">Desconectado</span>
+                        </h5>
+                        <p class="card-text mb-0" id="last-update">Última actualización: Nunca</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark text-white">
+                    <div class="card-body">
+                        <h5 class="card-title">Dirección ESP8266</h5>
+                        <div class="input-group">
+                            <input type="text" class="form-control bg-secondary text-white border-0" 
+                                   id="esp-ip" value="192.168.1.21" placeholder="IP o hostname">
+                            <button class="btn btn-outline-light" type="button" onclick="updateIP()">
+                                <i class="fas fa-save"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row mb-3">
+            <div class="col">
+                <button class="btn btn-refresh btn-primary" onclick="fetchLogs()">
+                    <i class="fas fa-sync-alt"></i> Actualizar Ahora
+                </button>
+                <button class="btn btn-warning" onclick="clearDisplay()">
+                    <i class="fas fa-eraser"></i> Limpiar Pantalla
+                </button>
+                <button class="btn btn-info" onclick="toggleAutoRefresh()">
+                    <i class="fas fa-clock" id="auto-refresh-icon"></i>
+                    <span id="auto-refresh-text">Auto-refresh: OFF</span>
+                </button>
+                <button class="btn btn-success" onclick="exportLogs()">
+                    <i class="fas fa-download"></i> Exportar
+                </button>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col">
+                <div id="logs-container">
+                    <div class="text-center text-muted">
+                        <i class="fas fa-spinner fa-spin fa-3x mb-3"></i>
+                        <p>Esperando logs...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let autoRefreshInterval = null;
+        let espIP = '192.168.1.21';
+        let allLogs = [];
+
+        function updateIP() {
+            espIP = document.getElementById('esp-ip').value.trim();
+            if (!espIP) espIP = '192.168.1.21';
+            localStorage.setItem('esp-ip', espIP);
+            showNotification('IP actualizada: ' + espIP, 'success');
+            fetchLogs();
+        }
+
+        function showNotification(message, type = 'info') {
+            // Simple notification (could be replaced with toast library)
+            console.log(`[${type.toUpperCase()}] ${message}`);
+        }
+
+        async function fetchLogs() {
+            const logsContainer = document.getElementById('logs-container');
+            const statusIndicator = document.getElementById('status-indicator');
+            const connectionStatus = document.getElementById('connection-status');
+            const lastUpdate = document.getElementById('last-update');
+
+            try {
+                const response = await fetch(`http://${espIP}/getLogs`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                
+                // Update connection status
+                statusIndicator.className = 'status-indicator status-online';
+                connectionStatus.textContent = 'Conectado';
+                
+                if (data.logs && data.logs.length > 0) {
+                    allLogs = data.logs;
+                    displayLogs(data.logs);
+                } else {
+                    logsContainer.innerHTML = '<div class="text-center text-muted"><i class="fas fa-info-circle fa-2x mb-2"></i><p>No hay logs disponibles</p></div>';
+                }
+
+                lastUpdate.textContent = 'Última actualización: ' + new Date().toLocaleTimeString();
+
+            } catch (error) {
+                console.error('Error fetching logs:', error);
+                statusIndicator.className = 'status-indicator status-offline';
+                connectionStatus.textContent = 'Error de conexión';
+                logsContainer.innerHTML = `
+                    <div class="text-center text-danger">
+                        <i class="fas fa-exclamation-triangle fa-3x mb-3"></i>
+                        <h4>Error al cargar logs</h4>
+                        <p>${error.message}</p>
+                        <p class="text-muted">Verifica que el ESP esté conectado en: http://${espIP}</p>
+                    </div>
+                `;
+            }
+        }
+
+        function displayLogs(logs) {
+            const logsContainer = document.getElementById('logs-container');
+            let html = '';
+            
+            logs.forEach((log, index) => {
+                let logClass = 'log-default';
+                
+                if (log.includes('ERROR') || log.includes('failed') || log.includes('Failed')) {
+                    logClass = 'log-error';
+                } else if (log.includes('WARN') || log.includes('warning')) {
+                    logClass = 'log-warn';
+                } else if (log.includes('success') || log.includes('Success') || log.includes('OK')) {
+                    logClass = 'log-success';
+                } else if (log.includes('DISCORD') || log.includes('Discord')) {
+                    logClass = 'log-discord';
+                } else if (log.includes('INFO')) {
+                    logClass = 'log-info';
+                }
+                
+                html += `<div class="log-line ${logClass}">${escapeHtml(log)}</div>`;
+            });
+            
+            logsContainer.innerHTML = html;
+            logsContainer.scrollTop = logsContainer.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function clearDisplay() {
+            document.getElementById('logs-container').innerHTML = '<div class="text-center text-muted"><p>Pantalla limpiada. Los logs se recargarán en la próxima actualización.</p></div>';
+        }
+
+        function toggleAutoRefresh() {
+            const icon = document.getElementById('auto-refresh-icon');
+            const text = document.getElementById('auto-refresh-text');
+            
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+                icon.className = 'fas fa-clock';
+                text.textContent = 'Auto-refresh: OFF';
+                showNotification('Auto-refresh desactivado', 'info');
+            } else {
+                autoRefreshInterval = setInterval(fetchLogs, 3000);
+                icon.className = 'fas fa-clock fa-spin';
+                text.textContent = 'Auto-refresh: ON (3s)';
+                showNotification('Auto-refresh activado (cada 3 segundos)', 'success');
+                fetchLogs(); // Fetch immediately
+            }
+        }
+
+        function exportLogs() {
+            if (allLogs.length === 0) {
+                showNotification('No hay logs para exportar', 'warning');
+                return;
+            }
+
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const filename = `greennanny-logs-${timestamp}.txt`;
+            const content = allLogs.join('\n');
+            
+            const blob = new Blob([content], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+            showNotification(`Logs exportados: ${filename}`, 'success');
+        }
+
+        // Initialize
+        window.addEventListener('DOMContentLoaded', function() {
+            // Load saved IP
+            const savedIP = localStorage.getItem('esp-ip');
+            if (savedIP) {
+                espIP = savedIP;
+                document.getElementById('esp-ip').value = espIP;
+            }
+            
+            // Initial fetch
+            fetchLogs();
+            
+            // Show welcome message
+            console.log('%cGreenNanny Debug Viewer', 'font-size: 20px; font-weight: bold; color: #667eea;');
+            console.log('Conectado a: http://' + espIP);
+        });
+
+        // Handle Enter key in IP input
+        document.getElementById('esp-ip').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                updateIP();
+            }
+        });
+    </script>
+</body>
+</html>

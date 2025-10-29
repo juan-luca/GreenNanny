@@ -671,6 +671,7 @@
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav ms-auto align-items-center">
                     <li class="nav-item me-2"><a class="nav-link active" href="index.html" aria-current="page">Dashboard</a></li>
+                    <li class="nav-item me-2"><a class="nav-link" href="#" id="debugLogsBtn" title="View Debug Logs"><i class="fas fa-bug"></i> Debug</a></li>
                     <li class="nav-item me-2"><a class="nav-link" href="update.html" title="OTA Firmware Update"><i class="fas fa-cloud-upload-alt"></i> Update</a></li>
                     <li class="nav-item ms-2"><button class="btn btn-sm btn-outline-light" id="btnDev1" type="button" title="Ir a greennanny.local">Nanny 1</button></li>
                     <li class="nav-item ms-2"><button class="btn btn-sm btn-outline-light" id="btnDev2" type="button" title="Ir a greennanny2.local">Nanny 2</button></li>
@@ -1124,5 +1125,122 @@
 
     <!-- Main App Logic -->
     <script type="module" src="js/app.js"></script>
+
+    <!-- Debug Logs Inline Script -->
+    <script>
+      // Create and inject debug modal on page load
+      document.addEventListener('DOMContentLoaded', function() {
+        // Create modal HTML
+        const modalHTML = `
+          <div class="modal fade" id="debugLogsModal" tabindex="-1" aria-labelledby="debugLogsModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-lg modal-dialog-scrollable">
+              <div class="modal-content">
+                <div class="modal-header bg-dark text-white">
+                  <h5 class="modal-title" id="debugLogsModalLabel"><i class="fas fa-bug"></i> Debug Logs</h5>
+                  <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body bg-dark">
+                  <div class="d-flex justify-content-between mb-2">
+                    <button id="refreshLogsBtn" class="btn btn-sm btn-info"><i class="fas fa-sync"></i> Refresh</button>
+                    <button id="clearLogsDisplay" class="btn btn-sm btn-warning"><i class="fas fa-eraser"></i> Clear Display</button>
+                  </div>
+                  <pre id="debugLogsContent" style="background-color: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 5px; max-height: 500px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px;"></pre>
+                </div>
+                <div class="modal-footer bg-dark">
+                  <span class="text-light me-auto" id="logUpdateTime">Last update: Never</span>
+                  <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+        
+        // Inject modal at end of body
+        document.body.insertAdjacentHTML('beforeend', modalHTML);
+        
+        let debugLogsInterval = null;
+        
+        // Fetch and display logs
+        async function fetchDebugLogs() {
+          try {
+            const response = await fetch('/getLogs');
+            if (!response.ok) throw new Error('Failed to fetch logs');
+            const data = await response.json();
+            
+            const logsContainer = document.getElementById('debugLogsContent');
+            if (data.logs && data.logs.length > 0) {
+              let html = '';
+              data.logs.forEach(log => {
+                let color = '#d4d4d4'; // Default white
+                if (log.includes('ERROR') || log.includes('failed') || log.includes('Failed')) {
+                  color = '#ff6b6b'; // Red
+                } else if (log.includes('WARN') || log.includes('warning')) {
+                  color = '#ffd93d'; // Yellow
+                } else if (log.includes('success') || log.includes('Success') || log.includes('OK')) {
+                  color = '#6bcf7f'; // Green
+                } else if (log.includes('DISCORD') || log.includes('Discord')) {
+                  color = '#4dabf7'; // Blue
+                } else if (log.includes('INFO')) {
+                  color = '#74c0fc'; // Cyan
+                }
+                html += '<span style="color: ' + color + ';">' + log + '</span>\\n';
+              });
+              logsContainer.innerHTML = html;
+              logsContainer.scrollTop = logsContainer.scrollHeight;
+            } else {
+              logsContainer.innerHTML = '<span style="color: #888;">No logs available</span>';
+            }
+            
+            document.getElementById('logUpdateTime').textContent = 'Last update: ' + new Date().toLocaleTimeString();
+          } catch (error) {
+            console.error('Error fetching logs:', error);
+            document.getElementById('debugLogsContent').innerHTML = '<span style="color: #ff6b6b;">Error loading logs: ' + error.message + '</span>';
+          }
+        }
+        
+        // Open modal and start auto-refresh
+        const debugBtn = document.getElementById('debugLogsBtn');
+        if (debugBtn) {
+          debugBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            const modal = new bootstrap.Modal(document.getElementById('debugLogsModal'));
+            modal.show();
+            
+            // Fetch immediately
+            fetchDebugLogs();
+            
+            // Start auto-refresh every 3 seconds
+            if (!debugLogsInterval) {
+              debugLogsInterval = setInterval(fetchDebugLogs, 3000);
+            }
+          });
+        }
+        
+        // Stop auto-refresh when modal closes
+        const modalElement = document.getElementById('debugLogsModal');
+        if (modalElement) {
+          modalElement.addEventListener('hidden.bs.modal', function() {
+            if (debugLogsInterval) {
+              clearInterval(debugLogsInterval);
+              debugLogsInterval = null;
+            }
+          });
+        }
+        
+        // Manual refresh button
+        document.addEventListener('click', function(e) {
+          if (e.target && e.target.id === 'refreshLogsBtn') {
+            fetchDebugLogs();
+          }
+        });
+        
+        // Clear display button
+        document.addEventListener('click', function(e) {
+          if (e.target && e.target.id === 'clearLogsDisplay') {
+            document.getElementById('debugLogsContent').innerHTML = '<span style="color: #888;">Display cleared. Logs will refresh in 3 seconds...</span>';
+          }
+        });
+      });
+    </script>
 </body>
 </html>

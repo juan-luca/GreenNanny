@@ -40,6 +40,13 @@ const int  daylightOffset_sec = 0;         // nada de DST
 #define THRESHOLDS_CONFIG_FILE "/thresholds_config.json" // File for fan/extractor thresholds
 #define DISCORD_CONFIG_FILE "/discord_config.json" // File for Discord webhook configuration
 
+// Debug log buffer
+#define DEBUG_LOG_SIZE 200 // Número de mensajes de log a mantener
+String debugLogBuffer[DEBUG_LOG_SIZE];
+int debugLogIndex = 0;
+int debugLogCount = 0;
+bool discordProcessing = false;
+
 // RTC - REMOVED
 // RTC_DS1307 rtc;
 
@@ -104,7 +111,7 @@ const unsigned long testCycleDuration = 60000; // 60 segundos por ciclo completo
 String discordWebhookUrl = "";
 bool discordAlertsEnabled = false;
 unsigned long lastDiscordAlert = 0;
-const unsigned long discordAlertCooldown = 300000; // 5 minutos entre alertas del mismo tipo
+const unsigned long discordAlertCooldown = 10000; // 10 segundos para testing (cambiar a 300000 en producción)
 
 // Discord alert thresholds
 struct DiscordAlertConfig {
@@ -241,10 +248,12 @@ void logEvent(const String& eventType, const String& details); // Log events to 
 void loadDiscordConfig();      // Load Discord webhook config from file
 void saveDiscordConfig();      // Save Discord webhook config to file
 void sendDiscordAlert(const String& title, const String& message, const String& color); // Send alert to Discord
+void sendDiscordAlertTest(const String& title, const String& message, const String& color); // Send test alert (no cooldown)
 void checkAndSendAlerts(float temp, float hum, bool sensorValid); // Check conditions and send alerts
 void handleGetDiscordConfig(); // API endpoint to get Discord config
 void handleSetDiscordConfig(); // API endpoint to set Discord config
 void handleTestDiscordAlert(); // API endpoint to send test alert
+void handleGetLogs(); // API endpoint to get debug logs
 // Stage Control
 int getCurrentStageIndex(unsigned long daysElapsed); // Accepts daysElapsed as arg
 void loadManualStage();
@@ -809,6 +818,30 @@ int getCurrentStageIndex(unsigned long daysElapsed) {
     }
     // Si el tiempo transcurrido supera la duración total de todas las etapas
     return numStages - 1; // Permanecer en la última etapa
+}
+
+// Función para agregar mensajes al buffer de debug
+void addDebugLog(const String& message) {
+    // Obtener timestamp
+    time_t now = time(nullptr);
+    struct tm timeinfo;
+    char timestamp[20];
+    
+    if (ntpTimeSynchronized && localtime_r(&now, &timeinfo)) {
+        strftime(timestamp, sizeof(timestamp), "%H:%M:%S", &timeinfo);
+    } else {
+        snprintf(timestamp, sizeof(timestamp), "%lu", millis() / 1000);
+    }
+    
+    // Agregar al buffer circular
+    debugLogBuffer[debugLogIndex] = String(timestamp) + " | " + message;
+    debugLogIndex = (debugLogIndex + 1) % DEBUG_LOG_SIZE;
+    if (debugLogCount < DEBUG_LOG_SIZE) {
+        debugLogCount++;
+    }
+    
+    // También imprimir en Serial
+    Serial.println(message);
 }
 
 
@@ -2239,11 +2272,13 @@ void updateTestModeSimulation() {
             simulatedHumidity = 30.0 + random(0, 201) / 10.0; // 30.0 a 50.0
         }
         
-        Serial.print("[TEST MODE] Nuevos valores aleatorios | Temp: ");
+        Serial.print("[TEST MODE] Valores actualizados (solo simulación) | Temp: ");
         Serial.print(simulatedTemperature, 1);
         Serial.print("°C | Hum: ");
         Serial.print(simulatedHumidity, 1);
-        Serial.println("%");
+        Serial.print("% | Las mediciones se guardan cada ");
+        Serial.print(measurementInterval);
+        Serial.println("h según intervalo configurado");
         
         lastUpdate = now;
     }
@@ -2285,9 +2320,13 @@ void handleTestMode() {
             // Iniciar con valores aleatorios
             simulatedTemperature = 22.0 + random(0, 81) / 10.0; // 22.0 a 30.0
             simulatedHumidity = 50.0 + random(0, 251) / 10.0;   // 50.0 a 75.0
+            Serial.println("[TEST MODE] ========================================");
             Serial.println("[TEST MODE] *** MODO TEST ACTIVADO ***");
-            Serial.println("[TEST MODE] El sistema usará valores aleatorios que cambian cada 10 segundos");
-            Serial.println("[TEST MODE] El sistema funcionará normalmente (riego, ventilador, etc.)");
+            Serial.println("[TEST MODE] - Valores simulados cambian cada 10 segundos");
+            Serial.println("[TEST MODE] - Las MEDICIONES se guardan según intervalo configurado (" + String(measurementInterval) + "h)");
+            Serial.println("[TEST MODE] - El sistema funciona normalmente (riego, ventilador, etc.)");
+            Serial.println("[TEST MODE] - Control automático respeta el intervalo de medición");
+            Serial.println("[TEST MODE] ========================================");
         } else {
             Serial.println("[TEST MODE] *** MODO TEST DESACTIVADO ***");
             Serial.println("[TEST MODE] El sistema volverá a usar el sensor DHT11 real");
@@ -2389,103 +2428,289 @@ void saveDiscordConfig() {
 
 // Enviar alerta a Discord
 void sendDiscordAlert(const String& title, const String& message, const String& color) {
+    if (discordProcessing) {
+        addDebugLog("[DISCORD] Busy, skipping");
+        return;
+    }
+    
     if (!discordAlertsEnabled || discordWebhookUrl.length() == 0) {
         return;
     }
     
     if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("[DISCORD] Cannot send alert: WiFi not connected.");
+        addDebugLog("[DISCORD] No WiFi!");
         return;
     }
     
-    // Rate limiting: no enviar la misma alerta muy seguido
+    // Rate limiting
     unsigned long now = millis();
     if (now - lastDiscordAlert < discordAlertCooldown) {
-        Serial.println("[DISCORD] Alert cooldown active. Skipping.");
+        addDebugLog("[DISCORD] Cooldown active");
         return;
     }
     
-    Serial.print("[DISCORD] Sending alert: ");
-    Serial.println(title);
+    discordProcessing = true;
+    addDebugLog("=== DISCORD START ===");
+    addDebugLog("Title: " + title.substring(0, 25));
     
-    // Parsear URL del webhook
-    String host;
-    String path;
+    // Parse URL
+    String host, path;
     int port = 443;
-    bool useSSL = true;
     
-    if (discordWebhookUrl.startsWith("https://")) {
-        int hostStart = 8; // después de "https://"
-        int pathStart = discordWebhookUrl.indexOf('/', hostStart);
-        if (pathStart > 0) {
-            host = discordWebhookUrl.substring(hostStart, pathStart);
-            path = discordWebhookUrl.substring(pathStart);
-        } else {
-            host = discordWebhookUrl.substring(hostStart);
-            path = "/";
-        }
+    if (!discordWebhookUrl.startsWith("https://")) {
+        addDebugLog("[ERR] Not HTTPS");
+        discordProcessing = false;
+        return;
+    }
+    
+    int hostStart = 8;
+    int pathStart = discordWebhookUrl.indexOf('/', hostStart);
+    if (pathStart > 0) {
+        host = discordWebhookUrl.substring(hostStart, pathStart);
+        path = discordWebhookUrl.substring(pathStart);
     } else {
-        Serial.println("[DISCORD ERROR] Invalid webhook URL (must be HTTPS).");
+        addDebugLog("[ERR] Bad URL format");
+        discordProcessing = false;
         return;
     }
     
-    // Crear cliente HTTPS
+    addDebugLog("Host: " + host);
+    
+    // Connect
     WiFiClientSecure client;
-    client.setInsecure(); // No verificar certificado SSL (para simplificar)
+    client.setInsecure();
+    client.setTimeout(15000);
     
+    addDebugLog("Connecting...");
     if (!client.connect(host.c_str(), port)) {
-        Serial.println("[DISCORD ERROR] Connection failed.");
+        addDebugLog("[ERR] Connect failed");
+        addDebugLog("WiFi: " + String(WiFi.RSSI()) + " dBm");
+        discordProcessing = false;
         return;
     }
     
-    // Construir JSON payload
+    addDebugLog("Connected!");
+    
+    // Build JSON
     StaticJsonDocument<512> doc;
     JsonArray embeds = doc.createNestedArray("embeds");
     JsonObject embed = embeds.createNestedObject();
     embed["title"] = title;
     embed["description"] = message;
-    embed["color"] = strtol(color.c_str(), NULL, 16); // Convertir hex a decimal
-    embed["timestamp"] = ""; // Discord usará timestamp actual
+    embed["color"] = strtol(color.c_str(), NULL, 16);
     
     JsonObject footer = embed.createNestedObject("footer");
-    footer["text"] = "GreenNanny Alert System";
+    footer["text"] = "GreenNanny";
     
     String payload;
     serializeJson(doc, payload);
     
-    // Enviar petición POST
+    addDebugLog("Payload: " + String(payload.length()) + "B");
+    
+    // Send POST
     client.print(String("POST ") + path + " HTTP/1.1\r\n");
     client.print(String("Host: ") + host + "\r\n");
+    client.print("User-Agent: ESP8266\r\n");
     client.print("Content-Type: application/json\r\n");
     client.print("Content-Length: " + String(payload.length()) + "\r\n");
     client.print("Connection: close\r\n\r\n");
     client.print(payload);
+    client.flush();
     
-    // Esperar respuesta
+    addDebugLog("Sent, waiting...");
+    
+    // Wait for response
     unsigned long timeout = millis();
-    while (client.available() == 0) {
-        if (millis() - timeout > 5000) {
-            Serial.println("[DISCORD ERROR] Timeout.");
+    while (!client.available()) {
+        if (millis() - timeout > 15000) {
+            addDebugLog("[ERR] Timeout");
             client.stop();
+            discordProcessing = false;
             return;
         }
+        delay(50);
+        yield();
     }
     
-    // Leer respuesta
-    String response = "";
-    while (client.available()) {
-        response += client.readStringUntil('\r');
-    }
+    // Read status line only
+    String statusLine = client.readStringUntil('\n');
+    addDebugLog("Response: " + statusLine.substring(0, 20));
     
-    if (response.indexOf("204") > 0 || response.indexOf("200") > 0) {
-        Serial.println("[DISCORD] Alert sent successfully!");
-        lastDiscordAlert = now;
-    } else {
-        Serial.print("[DISCORD ERROR] Failed to send: ");
-        Serial.println(response);
+    int statusCode = 0;
+    if (statusLine.indexOf("200") > 0) statusCode = 200;
+    else if (statusLine.indexOf("204") > 0) statusCode = 204;
+    else if (statusLine.indexOf("400") > 0) statusCode = 400;
+    else if (statusLine.indexOf("401") > 0) statusCode = 401;
+    else if (statusLine.indexOf("403") > 0) statusCode = 403;
+    else if (statusLine.indexOf("404") > 0) statusCode = 404;
+    else if (statusLine.indexOf("429") > 0) statusCode = 429;
+    
+    switch(statusCode) {
+        case 200:
+        case 204:
+            addDebugLog("[SUCCESS] Sent!");
+            lastDiscordAlert = now;
+            break;
+        case 400:
+            addDebugLog("[ERR] Bad Request");
+            break;
+        case 401:
+        case 403:
+            addDebugLog("[ERR] Unauthorized");
+            break;
+        case 404:
+            addDebugLog("[ERR] Not Found");
+            break;
+        case 429:
+            addDebugLog("[ERR] Rate Limited");
+            break;
+        default:
+            addDebugLog("[ERR] Code: " + String(statusCode));
     }
     
     client.stop();
+    addDebugLog("=== DISCORD END ===");
+    discordProcessing = false;
+}
+
+// Test alert - sin cooldown ni verificación de enabled
+void sendDiscordAlertTest(const String& title, const String& message, const String& color) {
+    if (discordProcessing) {
+        addDebugLog("[TEST] Busy, skipping");
+        return;
+    }
+    
+    if (discordWebhookUrl.length() == 0) {
+        addDebugLog("[TEST] No webhook URL");
+        return;
+    }
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        addDebugLog("[TEST] No WiFi!");
+        return;
+    }
+    
+    discordProcessing = true;
+    addDebugLog("=== TEST ALERT START ===");
+    addDebugLog("Title: " + title.substring(0, 25));
+    
+    // Parse URL
+    String host, path;
+    int port = 443;
+    
+    if (!discordWebhookUrl.startsWith("https://")) {
+        addDebugLog("[ERR] Not HTTPS");
+        discordProcessing = false;
+        return;
+    }
+    
+    int hostStart = 8;
+    int pathStart = discordWebhookUrl.indexOf('/', hostStart);
+    if (pathStart > 0) {
+        host = discordWebhookUrl.substring(hostStart, pathStart);
+        path = discordWebhookUrl.substring(pathStart);
+    } else {
+        addDebugLog("[ERR] Bad URL format");
+        discordProcessing = false;
+        return;
+    }
+    
+    addDebugLog("Host: " + host);
+    
+    // Connect
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setTimeout(15000);
+    
+    addDebugLog("Connecting...");
+    if (!client.connect(host.c_str(), port)) {
+        addDebugLog("[ERR] Connect failed");
+        addDebugLog("WiFi: " + String(WiFi.RSSI()) + " dBm");
+        discordProcessing = false;
+        return;
+    }
+    
+    addDebugLog("Connected!");
+    
+    // Build JSON
+    StaticJsonDocument<512> doc;
+    JsonArray embeds = doc.createNestedArray("embeds");
+    JsonObject embed = embeds.createNestedObject();
+    embed["title"] = title;
+    embed["description"] = message;
+    embed["color"] = strtol(color.c_str(), NULL, 16);
+    
+    JsonObject footer = embed.createNestedObject("footer");
+    footer["text"] = "GreenNanny Test";
+    
+    String payload;
+    serializeJson(doc, payload);
+    
+    addDebugLog("Payload: " + String(payload.length()) + "B");
+    
+    // Send POST
+    client.print(String("POST ") + path + " HTTP/1.1\r\n");
+    client.print(String("Host: ") + host + "\r\n");
+    client.print("User-Agent: ESP8266\r\n");
+    client.print("Content-Type: application/json\r\n");
+    client.print("Content-Length: " + String(payload.length()) + "\r\n");
+    client.print("Connection: close\r\n\r\n");
+    client.print(payload);
+    client.flush();
+    
+    addDebugLog("Sent, waiting...");
+    
+    // Wait for response
+    unsigned long timeout = millis();
+    while (!client.available()) {
+        if (millis() - timeout > 15000) {
+            addDebugLog("[ERR] Timeout");
+            client.stop();
+            discordProcessing = false;
+            return;
+        }
+        delay(50);
+        yield();
+    }
+    
+    // Read status line only
+    String statusLine = client.readStringUntil('\n');
+    addDebugLog("Response: " + statusLine.substring(0, 20));
+    
+    int statusCode = 0;
+    if (statusLine.indexOf("200") > 0) statusCode = 200;
+    else if (statusLine.indexOf("204") > 0) statusCode = 204;
+    else if (statusLine.indexOf("400") > 0) statusCode = 400;
+    else if (statusLine.indexOf("401") > 0) statusCode = 401;
+    else if (statusLine.indexOf("403") > 0) statusCode = 403;
+    else if (statusLine.indexOf("404") > 0) statusCode = 404;
+    else if (statusLine.indexOf("429") > 0) statusCode = 429;
+    
+    switch(statusCode) {
+        case 200:
+        case 204:
+            addDebugLog("[SUCCESS] Test sent!");
+            break;
+        case 400:
+            addDebugLog("[ERR] Bad Request");
+            break;
+        case 401:
+        case 403:
+            addDebugLog("[ERR] Unauthorized");
+            break;
+        case 404:
+            addDebugLog("[ERR] Not Found");
+            break;
+        case 429:
+            addDebugLog("[ERR] Rate Limited");
+            break;
+        default:
+            addDebugLog("[ERR] Code: " + String(statusCode));
+    }
+    
+    client.stop();
+    addDebugLog("=== TEST ALERT END ===");
+    discordProcessing = false;
 }
 
 // Verificar condiciones y enviar alertas si es necesario
@@ -2617,12 +2842,17 @@ void handleTestDiscordAlert() {
     Serial.println("[HTTP] Solicitud /testDiscordAlert (POST).");
     server.sendHeader("Access-Control-Allow-Origin", "*");
     
-    if (!discordAlertsEnabled || discordWebhookUrl.length() == 0) {
-        server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Discord alerts not configured or disabled\"}");
+    // Verificar solo que haya webhook URL configurada (no verificar si está enabled)
+    // porque es una prueba y debe funcionar aunque esté deshabilitado
+    if (discordWebhookUrl.length() == 0) {
+        Serial.println("[DISCORD] Test alert failed: No webhook URL configured");
+        server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Discord webhook URL not configured\"}");
         return;
     }
     
-    // Enviar alerta de prueba
+    Serial.println("[DISCORD] Sending test alert...");
+    
+    // Enviar alerta de prueba (sin cooldown)
     float temp = getTemperature();
     float hum = getHumidity();
     String message = String("This is a test alert from GreenNanny!\n\n") +
@@ -2631,13 +2861,46 @@ void handleTestDiscordAlert() {
                     "💧 Humidity: " + String(hum, 1) + "%\n\n" +
                     "If you received this message, Discord alerts are working correctly!";
     
-    sendDiscordAlert(
+    sendDiscordAlertTest(
         "✅ Test Alert - GreenNanny",
         message,
         "00FF00" // Verde
     );
     
+    Serial.println("[DISCORD] Test alert sent successfully");
     server.send(200, "application/json", "{\"status\":\"success\", \"message\":\"Test alert sent to Discord\"}");
+}
+
+// Handler para /getLogs - Obtener logs de debug
+void handleGetLogs() {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.sendHeader("Cache-Control", "no-cache");
+    
+    // Crear JSON con los logs
+    String response = "{\"logs\":[";
+    
+    if (debugLogCount > 0) {
+        // Calcular índice de inicio (el log más antiguo en el buffer)
+        int startIdx = (debugLogCount < DEBUG_LOG_SIZE) ? 0 : debugLogIndex;
+        
+        // Iterar por todos los logs en orden cronológico
+        for (int i = 0; i < debugLogCount; i++) {
+            int idx = (startIdx + i) % DEBUG_LOG_SIZE;
+            if (i > 0) response += ",";
+            
+            // Escapar caracteres especiales en el log
+            String logMsg = debugLogBuffer[idx];
+            logMsg.replace("\\", "\\\\");
+            logMsg.replace("\"", "\\\"");
+            logMsg.replace("\n", "\\n");
+            logMsg.replace("\r", "\\r");
+            
+            response += "\"" + logMsg + "\"";
+        }
+    }
+    
+    response += "]}";
+    server.send(200, "application/json", response);
 }
 
 // Handler para /setManualStage - Establecer etapa manual
@@ -2936,6 +3199,7 @@ void setupServer() {
     server.on("/getDiscordConfig", HTTP_GET, handleGetDiscordConfig);    // Obtener configuración de Discord
     server.on("/setDiscordConfig", HTTP_POST, handleSetDiscordConfig);   // Configurar Discord webhook
     server.on("/testDiscordAlert", HTTP_POST, handleTestDiscordAlert);   // Enviar alerta de prueba a Discord
+    server.on("/getLogs", HTTP_GET, handleGetLogs);                      // Obtener logs de debug
     server.on("/setManualStage", HTTP_POST, handleSetManualStage);       // Activar control manual de etapa
     server.on("/resetManualStage", HTTP_POST, handleResetManualStage);   // Desactivar control manual
     server.on("/updateStage", HTTP_POST, handleUpdateStage);             // Modificar parámetros de una etapa
