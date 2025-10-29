@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OTA Update - GreenNanny</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        :root {
+            --bg-primary: #121212;
+            --bg-secondary: #1e1e1e;
+            --text-primary: #e0e0e0;
+            --accent-primary: #3a86ff;
+        }
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: 'Roboto', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .update-container {
+            background-color: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 2rem;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+        }
+        .upload-zone {
+            border: 3px dashed #444;
+            border-radius: 8px;
+            padding: 3rem 2rem;
+            text-align: center;
+            transition: all 0.3s;
+            cursor: pointer;
+            background-color: #1a1a1a;
+        }
+        .upload-zone:hover {
+            border-color: var(--accent-primary);
+            background-color: #252525;
+        }
+        .upload-zone.dragover {
+            border-color: var(--accent-primary);
+            background-color: #2a2a4a;
+        }
+        .progress-container {
+            display: none;
+            margin-top: 1.5rem;
+        }
+        .btn-custom {
+            background-color: var(--accent-primary);
+            border: none;
+            padding: 0.75rem 2rem;
+            font-size: 1.1rem;
+        }
+        .btn-custom:hover {
+            background-color: #2563eb;
+        }
+        .file-info {
+            background-color: #2a2a2a;
+            padding: 1rem;
+            border-radius: 6px;
+            margin-top: 1rem;
+            display: none;
+        }
+        .alert-custom {
+            border-radius: 8px;
+            border: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="update-container">
+        <div class="text-center mb-4">
+            <i class="fas fa-cloud-upload-alt fa-4x text-primary mb-3"></i>
+            <h2>OTA Update System</h2>
+            <p class="text-muted">Update firmware or filesystem wirelessly</p>
+        </div>
+
+        <div id="alertContainer"></div>
+
+        <div class="mb-4">
+            <label class="form-label"><strong>Select Update Type:</strong></label>
+            <div class="btn-group w-100" role="group">
+                <input type="radio" class="btn-check" name="updateType" id="firmwareRadio" value="firmware" checked>
+                <label class="btn btn-outline-primary" for="firmwareRadio">
+                    <i class="fas fa-microchip me-2"></i>Firmware (.bin)
+                </label>
+
+                <input type="radio" class="btn-check" name="updateType" id="filesystemRadio" value="filesystem">
+                <label class="btn btn-outline-primary" for="filesystemRadio">
+                    <i class="fas fa-folder me-2"></i>Filesystem (.bin)
+                </label>
+            </div>
+        </div>
+
+        <div class="upload-zone" id="uploadZone">
+            <i class="fas fa-file-upload fa-3x mb-3 text-muted"></i>
+            <h5>Drag & Drop file here</h5>
+            <p class="text-muted mb-3">or</p>
+            <label for="fileInput" class="btn btn-custom">
+                <i class="fas fa-folder-open me-2"></i>Browse Files
+            </label>
+            <input type="file" id="fileInput" accept=".bin" style="display: none;">
+        </div>
+
+        <div class="file-info" id="fileInfo">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="fas fa-file-code me-2"></i>
+                    <span id="fileName"></span>
+                </div>
+                <div>
+                    <span id="fileSize" class="badge bg-secondary"></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="progress-container" id="progressContainer">
+            <div class="d-flex justify-content-between mb-2">
+                <span>Uploading...</span>
+                <span id="progressText">0%</span>
+            </div>
+            <div class="progress" style="height: 30px;">
+                <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                     role="progressbar" 
+                     id="progressBar" 
+                     style="width: 0%">
+                    <span id="progressPercent">0%</span>
+                </div>
+            </div>
+            <div class="mt-2 text-center">
+                <small class="text-muted" id="uploadSpeed"></small>
+            </div>
+        </div>
+
+        <div class="mt-4">
+            <button class="btn btn-success w-100" id="uploadBtn" disabled>
+                <i class="fas fa-upload me-2"></i>Start Upload
+            </button>
+        </div>
+
+        <div class="mt-4 text-center">
+            <a href="/index.html" class="text-decoration-none">
+                <i class="fas fa-arrow-left me-2"></i>Back to Dashboard
+            </a>
+        </div>
+
+        <div class="mt-4 text-muted small">
+            <p class="mb-1"><strong>⚠️ Important:</strong></p>
+            <ul class="small">
+                <li>Only upload valid .bin files</li>
+                <li>Do not interrupt the update process</li>
+                <li>Device will restart automatically after update</li>
+                <li>Make sure you have a stable power supply</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        let selectedFile = null;
+        const uploadZone = document.getElementById('uploadZone');
+        const fileInput = document.getElementById('fileInput');
+        const fileInfo = document.getElementById('fileInfo');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressBar = document.getElementById('progressBar');
+        const progressText = document.getElementById('progressText');
+        const progressPercent = document.getElementById('progressPercent');
+        const uploadSpeed = document.getElementById('uploadSpeed');
+        const alertContainer = document.getElementById('alertContainer');
+
+        // Drag & Drop handlers
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('dragover');
+        });
+
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('dragover');
+        });
+
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFile(files[0]);
+            }
+        });
+
+        uploadZone.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            if (!file.name.endsWith('.bin')) {
+                showAlert('Please select a valid .bin file', 'danger');
+                return;
+            }
+
+            selectedFile = file;
+            document.getElementById('fileName').textContent = file.name;
+            document.getElementById('fileSize').textContent = formatBytes(file.size);
+            fileInfo.style.display = 'block';
+            uploadBtn.disabled = false;
+            showAlert('File selected. Click "Start Upload" to begin.', 'info');
+        }
+
+        uploadBtn.addEventListener('click', () => {
+            if (!selectedFile) return;
+
+            const updateType = document.querySelector('input[name="updateType"]:checked').value;
+            uploadFile(selectedFile, updateType);
+        });
+
+        function uploadFile(file, type) {
+            const formData = new FormData();
+            formData.append('update', file);
+
+            const xhr = new XMLHttpRequest();
+            const startTime = Date.now();
+
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const percentComplete = (e.loaded / e.total) * 100;
+                    progressBar.style.width = percentComplete + '%';
+                    progressText.textContent = Math.round(percentComplete) + '%';
+                    progressPercent.textContent = Math.round(percentComplete) + '%';
+
+                    const elapsed = (Date.now() - startTime) / 1000;
+                    const speed = e.loaded / elapsed;
+                    uploadSpeed.textContent = `Speed: ${formatBytes(speed)}/s`;
+                }
+            });
+
+            xhr.addEventListener('load', () => {
+                if (xhr.status === 200) {
+                    showAlert('✅ Update successful! Device is restarting...', 'success');
+                    setTimeout(() => {
+                        showAlert('Waiting for device to come back online...', 'info');
+                        setTimeout(() => {
+                            window.location.href = '/index.html';
+                        }, 15000);
+                    }, 2000);
+                } else {
+                    showAlert('❌ Update failed: ' + xhr.statusText, 'danger');
+                    resetUpload();
+                }
+            });
+
+            xhr.addEventListener('error', () => {
+                showAlert('❌ Upload error. Please try again.', 'danger');
+                resetUpload();
+            });
+
+            xhr.open('POST', '/update');
+            xhr.setRequestHeader('Authorization', 'Basic ' + btoa('admin:greennanny2024'));
+            
+            uploadBtn.disabled = true;
+            fileInfo.style.display = 'none';
+            progressContainer.style.display = 'block';
+            uploadZone.style.display = 'none';
+            
+            xhr.send(formData);
+        }
+
+        function resetUpload() {
+            progressContainer.style.display = 'none';
+            uploadZone.style.display = 'block';
+            progressBar.style.width = '0%';
+            uploadBtn.disabled = true;
+            selectedFile = null;
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        }
+
+        function showAlert(message, type) {
+            alertContainer.innerHTML = `
+                <div class="alert alert-${type} alert-custom alert-dismissible fade show" role="alert">
+                    ${message}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            `;
+        }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

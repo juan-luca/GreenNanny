@@ -1108,6 +1108,35 @@ async function fetchAndUpdateThresholdsDisplay() {
     }
 }
 
+// Load Discord configuration from device
+async function loadDiscordConfig() {
+    if (!El.discordWebhookUrl || !El.discordEnabled) return;
+    try {
+        const config = await fetchData('/getDiscordConfig');
+        if (config) {
+            El.discordWebhookUrl.value = config.webhookUrl || '';
+            El.discordEnabled.checked = config.enabled || false;
+            
+            if (config.alerts) {
+                if (El.tempHighAlert) El.tempHighAlert.checked = config.alerts.tempHighAlert ?? true;
+                if (El.tempHighThreshold) El.tempHighThreshold.value = config.alerts.tempHighThreshold ?? 35;
+                if (El.tempLowAlert) El.tempLowAlert.checked = config.alerts.tempLowAlert ?? true;
+                if (El.tempLowThreshold) El.tempLowThreshold.value = config.alerts.tempLowThreshold ?? 15;
+                if (El.humHighAlert) El.humHighAlert.checked = config.alerts.humHighAlert ?? true;
+                if (El.humHighThreshold) El.humHighThreshold.value = config.alerts.humHighThreshold ?? 85;
+                if (El.humLowAlert) El.humLowAlert.checked = config.alerts.humLowAlert ?? true;
+                if (El.humLowThreshold) El.humLowThreshold.value = config.alerts.humLowThreshold ?? 30;
+                if (El.sensorFailAlert) El.sensorFailAlert.checked = config.alerts.sensorFailAlert ?? true;
+                if (El.deviceActivationAlert) El.deviceActivationAlert.checked = config.alerts.deviceActivationAlert ?? false;
+            }
+            console.log("Discord configuration loaded successfully.");
+        }
+    } catch (error) {
+        console.error("Error loading Discord config:", error);
+        // Don't show toast error as this is not critical for page load
+    }
+}
+
 async function fetchStagesInfo() {
      try {
          // Fetch the current stage definitions from the device
@@ -1570,32 +1599,6 @@ El.activatePumpBtn?.addEventListener('click', async () => {
     });
 
     // --- Discord Configuration (NEW) ---
-    // Load Discord configuration on page load
-    async function loadDiscordConfig() {
-        try {
-            const config = await fetchData('/getDiscordConfig');
-            if (config) {
-                El.discordWebhookUrl.value = config.webhookUrl || '';
-                El.discordEnabled.checked = config.enabled || false;
-                
-                if (config.alerts) {
-                    El.tempHighAlert.checked = config.alerts.tempHighAlert ?? true;
-                    El.tempHighThreshold.value = config.alerts.tempHighThreshold ?? 35;
-                    El.tempLowAlert.checked = config.alerts.tempLowAlert ?? true;
-                    El.tempLowThreshold.value = config.alerts.tempLowThreshold ?? 15;
-                    El.humHighAlert.checked = config.alerts.humHighAlert ?? true;
-                    El.humHighThreshold.value = config.alerts.humHighThreshold ?? 85;
-                    El.humLowAlert.checked = config.alerts.humLowAlert ?? true;
-                    El.humLowThreshold.value = config.alerts.humLowThreshold ?? 30;
-                    El.sensorFailAlert.checked = config.alerts.sensorFailAlert ?? true;
-                    El.deviceActivationAlert.checked = config.alerts.deviceActivationAlert ?? false;
-                }
-            }
-        } catch (error) {
-            console.error("Error loading Discord config:", error);
-        }
-    }
-
     // Save Discord configuration
     El.discordForm?.addEventListener('submit', async (e) => {
         e.preventDefault();

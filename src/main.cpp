@@ -3,6 +3,8 @@
 #include <ESP8266mDNS.h>
 #include <ESP8266NetBIOS.h>
 #include <ESP8266WebServer.h>
+#include <ESP8266HTTPUpdateServer.h>
+#include <ArduinoOTA.h>
 #include <DNSServer.h>
 #include <DHT.h>
 #include <LittleFS.h>
@@ -47,6 +49,13 @@ const byte DNS_PORT = 53;
 
 // Servidor web en el puerto 80
 ESP8266WebServer server(80);
+
+// HTTP Update Server para OTA
+ESP8266HTTPUpdateServer httpUpdater;
+
+// OTA Configuration
+const char* OTA_PASSWORD = "greennanny2024"; // Cambiar esto por una contraseña segura
+bool otaInProgress = false;
 
 // Almacenamiento de mediciones
 String measurements[MAX_JSON_OBJECTS];
@@ -194,6 +203,7 @@ void setupDHTSensor();
 void setupBomba();
 void setupFanAndExtractor();  // NEW: Setup for fan and extractor pins
 void setupServer();
+void setupOTA();               // NEW: Setup OTA updates
 void startAPMode();
 bool syncNtpTime(); // PROTOTIPO NTP (Modified: no RTC interaction)
 void startNameServices(); // Inicia mDNS/NBNS con greennanny, greennanny2, ...
@@ -468,6 +478,9 @@ void setup() {
          // *** INICIAR mDNS/NBNS con nombres secuenciales ***
          startNameServices();
 
+         // *** CONFIGURAR OTA UPDATES ***
+         setupOTA();
+
          // *** INTENTAR SINCRONIZAR HORA NTP ***
          if (syncNtpTime()) {
              // Hora sincronizada, recalcular próxima medición basado en la hora ACTUAL
@@ -503,6 +516,11 @@ void setup() {
 
 void loop() {
     unsigned long currentMillis = millis(); // Obtener millis al inicio del loop
+
+    // Manejar OTA updates (solo si está conectado a WiFi)
+    if (WiFi.status() == WL_CONNECTED && !otaInProgress) {
+        ArduinoOTA.handle();
+    }
 
     // Manejar clientes HTTP
     server.handleClient();
@@ -2188,43 +2206,46 @@ void handleSetThresholds() {
 void updateTestModeSimulation() {
     if (!testModeEnabled) return;
     
-    unsigned long elapsedMs = millis() - testModeStartTime;
-    unsigned long cyclePosition = elapsedMs % testCycleDuration;
-    float progress = (float)cyclePosition / (float)testCycleDuration; // 0.0 a 1.0
+    // Actualizar valores aleatorios cada 10 segundos
+    static unsigned long lastUpdate = 0;
+    unsigned long now = millis();
     
-    // Simulación cíclica de temperatura: 20°C -> 35°C -> 20°C
-    // Ciclo: 0-25% sube, 25-50% alta, 50-75% baja, 75-100% baja
-    if (progress < 0.33) {
-        // Subida: 20°C a 35°C
-        simulatedTemperature = 20.0 + (progress / 0.33) * 15.0;
-    } else if (progress < 0.66) {
-        // Mantenimiento alto: 30-35°C
-        simulatedTemperature = 30.0 + ((progress - 0.33) / 0.33) * 5.0;
-    } else {
-        // Bajada: 35°C a 20°C
-        simulatedTemperature = 35.0 - ((progress - 0.66) / 0.34) * 15.0;
-    }
-    
-    // Simulación de humedad: 40% -> 90% -> 40%
-    if (progress < 0.5) {
-        // Subida: 40% a 90%
-        simulatedHumidity = 40.0 + (progress / 0.5) * 50.0;
-    } else {
-        // Bajada: 90% a 40%
-        simulatedHumidity = 90.0 - ((progress - 0.5) / 0.5) * 50.0;
-    }
-    
-    // Log cada 5 segundos
-    static unsigned long lastTestLog = 0;
-    if (millis() - lastTestLog > 5000) {
-        Serial.print("[TEST MODE] Ciclo: ");
-        Serial.print(progress * 100);
-        Serial.print("% | Temp: ");
-        Serial.print(simulatedTemperature);
+    if (now - lastUpdate >= 10000) { // Cada 10 segundos
+        // Generar temperatura aleatoria entre 18°C y 38°C
+        // Con mayor probabilidad en el rango normal (22-30°C)
+        float tempRandom = random(0, 100) / 100.0; // 0.0 a 1.0
+        if (tempRandom < 0.7) {
+            // 70% de probabilidad: temperatura normal (22-30°C)
+            simulatedTemperature = 22.0 + random(0, 81) / 10.0; // 22.0 a 30.0
+        } else if (tempRandom < 0.85) {
+            // 15% de probabilidad: temperatura alta (30-38°C)
+            simulatedTemperature = 30.0 + random(0, 81) / 10.0; // 30.0 a 38.0
+        } else {
+            // 15% de probabilidad: temperatura baja (18-22°C)
+            simulatedTemperature = 18.0 + random(0, 41) / 10.0; // 18.0 a 22.0
+        }
+        
+        // Generar humedad aleatoria entre 30% y 95%
+        // Con mayor probabilidad en el rango normal (50-75%)
+        float humRandom = random(0, 100) / 100.0; // 0.0 a 1.0
+        if (humRandom < 0.7) {
+            // 70% de probabilidad: humedad normal (50-75%)
+            simulatedHumidity = 50.0 + random(0, 251) / 10.0; // 50.0 a 75.0
+        } else if (humRandom < 0.85) {
+            // 15% de probabilidad: humedad alta (75-95%)
+            simulatedHumidity = 75.0 + random(0, 201) / 10.0; // 75.0 a 95.0
+        } else {
+            // 15% de probabilidad: humedad baja (30-50%)
+            simulatedHumidity = 30.0 + random(0, 201) / 10.0; // 30.0 a 50.0
+        }
+        
+        Serial.print("[TEST MODE] Nuevos valores aleatorios | Temp: ");
+        Serial.print(simulatedTemperature, 1);
         Serial.print("°C | Hum: ");
-        Serial.print(simulatedHumidity);
+        Serial.print(simulatedHumidity, 1);
         Serial.println("%");
-        lastTestLog = millis();
+        
+        lastUpdate = now;
     }
 }
 
@@ -2261,10 +2282,12 @@ void handleTestMode() {
         
         if (testModeEnabled) {
             testModeStartTime = millis();
-            simulatedTemperature = 20.0;
-            simulatedHumidity = 40.0;
+            // Iniciar con valores aleatorios
+            simulatedTemperature = 22.0 + random(0, 81) / 10.0; // 22.0 a 30.0
+            simulatedHumidity = 50.0 + random(0, 251) / 10.0;   // 50.0 a 75.0
             Serial.println("[TEST MODE] *** MODO TEST ACTIVADO ***");
-            Serial.println("[TEST MODE] El sistema usará valores simulados que varían cíclicamente");
+            Serial.println("[TEST MODE] El sistema usará valores aleatorios que cambian cada 10 segundos");
+            Serial.println("[TEST MODE] El sistema funcionará normalmente (riego, ventilador, etc.)");
         } else {
             Serial.println("[TEST MODE] *** MODO TEST DESACTIVADO ***");
             Serial.println("[TEST MODE] El sistema volverá a usar el sensor DHT11 real");
@@ -2828,6 +2851,63 @@ void startAPMode() {
     } else {
         Serial.println("[ERROR] Falló el inicio del modo AP!");
     }
+}
+
+// ============================================
+// OTA (Over-The-Air) UPDATE CONFIGURATION
+// ============================================
+
+void setupOTA() {
+    Serial.println("[SETUP] Configurando OTA updates...");
+    
+    // ArduinoOTA setup
+    ArduinoOTA.setPort(8266);
+    ArduinoOTA.setHostname(actualHostname.c_str());
+    ArduinoOTA.setPassword(OTA_PASSWORD);
+    
+    ArduinoOTA.onStart([]() {
+        otaInProgress = true;
+        String type;
+        if (ArduinoOTA.getCommand() == U_FLASH) {
+            type = "sketch";
+        } else { // U_FS
+            type = "filesystem";
+            LittleFS.end(); // Cerrar filesystem antes de actualizar
+        }
+        Serial.println("[OTA] Iniciando actualización: " + type);
+    });
+    
+    ArduinoOTA.onEnd([]() {
+        Serial.println("\n[OTA] Actualización completada!");
+        otaInProgress = false;
+    });
+    
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+        static unsigned long lastPrint = 0;
+        unsigned long now = millis();
+        if (now - lastPrint > 1000) { // Print every second
+            Serial.printf("[OTA] Progreso: %u%%\r", (progress / (total / 100)));
+            lastPrint = now;
+        }
+    });
+    
+    ArduinoOTA.onError([](ota_error_t error) {
+        Serial.printf("[OTA ERROR] Error[%u]: ", error);
+        if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+        else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+        else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+        else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+        else if (error == OTA_END_ERROR) Serial.println("End Failed");
+        otaInProgress = false;
+    });
+    
+    ArduinoOTA.begin();
+    Serial.println("[OTA] ArduinoOTA iniciado en puerto 8266");
+    
+    // HTTP Update Server setup (web-based OTA)
+    httpUpdater.setup(&server, "/update", "admin", OTA_PASSWORD);
+    Serial.println("[OTA] HTTP Update Server configurado en /update");
+    Serial.println("[OTA] Usuario: admin | Contraseña: " + String(OTA_PASSWORD));
 }
 
 // Configura servidor web y endpoints
