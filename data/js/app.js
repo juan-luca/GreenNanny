@@ -1,6 +1,6 @@
 
 const BASE_URL = `${location.protocol}//${window.location.hostname}`;
-const REFRESH_INTERVAL = 15000;
+const REFRESH_INTERVAL = 30000; // Aumentado de 15s a 30s para reducir carga del ESP8266
 const CHART_MAX_POINTS = 180;
 const HISTORY_MAX_ENTRIES = 150;
 const TOAST_TIMEOUT = 6000;
@@ -8,8 +8,12 @@ const FETCH_TIMEOUT = 20000;
 const MS_PER_HOUR = 3600 * 1000;
 const MS_PER_DAY = 24 * MS_PER_HOUR;
 const UPDATE_FLASH_DURATION = 700;
+const LOW_HEAP_THRESHOLD = 13000; // Si heap <13KB, reducir velocidad de polling
 
 // --- Simple device buttons (Nanny 1/2/3) ---
+// Discovery can spam console if .local/NBNS names aren't resolvable (Windows without mDNS).
+// Enable by adding ?discover=1 to the URL. Default: disabled to avoid ERR_NAME_NOT_RESOLVED noise.
+const ENABLE_DEVICE_DISCOVERY = new URLSearchParams(location.search).has('discover');
 function hostForIndex(idx) {
     const base = 'greennanny';
     return idx === 1 ? `${base}.local` : `${base}${idx}.local`;
@@ -53,6 +57,8 @@ function wireBtnNav(btn, targetHost) {
 }
 
 async function updateDeviceButtons() {
+    if (document.hidden) return; // avoid work when tab hidden
+    if (!ENABLE_DEVICE_DISCOVERY) return; // discovery disabled by default
     const currentHost = window.location.hostname;
     for (let i = 1; i <= 3; i++) {
         const host = hostForIndex(i);
@@ -62,8 +68,12 @@ async function updateDeviceButtons() {
             const ip = (window.lastCoreData && window.lastCoreData.deviceIP) ? window.lastCoreData.deviceIP : null;
             setBtnState(el, true, true, ip);
         } else {
-            const res = await probeHostAvailable(host, 900);
-            setBtnState(el, res.ok, false, res.ip);
+            try {
+                const res = await probeHostAvailable(host, 900);
+                setBtnState(el, res.ok, false, res.ip);
+            } catch (_) {
+                // swallow any unexpected errors
+            }
         }
     }
 }
@@ -75,8 +85,11 @@ function initDeviceButtons() {
     wireBtnNav(b1, hostForIndex(1));
     wireBtnNav(b2, hostForIndex(2));
     wireBtnNav(b3, hostForIndex(3));
-    updateDeviceButtons();
-    setInterval(updateDeviceButtons, 30000); // refrescar cada 30s
+    // Only probe if discovery is explicitly enabled via query param
+    if (ENABLE_DEVICE_DISCOVERY) {
+        updateDeviceButtons();
+        setInterval(updateDeviceButtons, 30000); // refrescar cada 30s
+    }
 }
 
 // (Device discovery & switching removed per request; dashboard targets current host only)
@@ -90,6 +103,7 @@ const El = {
     pumpCountWidget: document.getElementById('pumpCountWidget'),
     vpdWidget: document.getElementById('vpdWidget'),
     uptimeWidget: document.getElementById('uptimeWidget'),
+    diskWidget: document.getElementById('diskWidget'),
     systemStatusWidget: document.getElementById('systemStatusWidget'),
     // Widget Inner Values
     temp: document.getElementById('temperature'),
@@ -99,6 +113,8 @@ const El = {
     pumpActivationCount: document.getElementById('pumpActivationCount'),
     vpd: document.getElementById('vpd'),
     totalElapsedTime: document.getElementById('totalElapsedTime'),
+    diskFreePercent: document.getElementById('diskFreePercent'),
+    diskFreeBytes: document.getElementById('diskFreeBytes'),
     // Status Indicators
     pumpStatusIndicator: document.getElementById('pumpStatusIndicator'),
     stageModeIndicator: document.getElementById('stageModeIndicator'),
@@ -165,6 +181,7 @@ const El = {
     pageTitle: document.querySelector('title'),
     deviceIP: document.getElementById('deviceIP'),
     navbarDeviceName: document.getElementById('navbarDeviceName'),
+    downloadLogsBtn: document.getElementById('downloadLogsBtn'),
     srStatusMessages: document.getElementById('sr-status-messages'),
     // Stage Configuration
     stageConfigLoading: document.getElementById('stageConfigLoading'),
@@ -220,6 +237,20 @@ async function fetchData(endpoint, timeout = FETCH_TIMEOUT) {
         throw e;
     } finally {
         showGlobalLoader(false);
+    }
+}
+
+function downloadLogs() {
+    try {
+        const a = document.createElement('a');
+        a.href = `${BASE_URL}/downloadLogs`;
+        a.download = `greennanny-logs.txt`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    } catch (e) {
+        console.error('Failed to trigger logs download', e);
+        showToast('Failed to download logs', 'error');
     }
 }
 
@@ -357,6 +388,7 @@ function setLoadingState(buttonElement, isLoading, loadingText = "Loading...") {
              else if (buttonElement.id === 'takeMeasurement') defaultText = '<i class="fas fa-ruler-combined" aria-hidden="true"></i> Trigger Measurement';
              else if (buttonElement.id === 'clearMeasurements') defaultText = '<i class="fas fa-trash-alt" aria-hidden="true"></i> Clear History';
              else if (buttonElement.id === 'restartSystem') defaultText = '<i class="fas fa-power-off" aria-hidden="true"></i> Restart System';
+             else if (buttonElement.id === 'downloadLogsBtn') defaultText = '<i class="fas fa-file-download" aria-hidden="true"></i> Logs';
              else if (buttonElement.id === 'resetManualStageButton') defaultText = '<i class="fas fa-undo" aria-hidden="true"></i> Reset to Auto';
              else if (buttonElement.id === 'refreshStage') defaultText = '<i class="fas fa-sync" aria-hidden="true"></i> Refresh';
              // Attempt to find the button text if no icon was present initially
@@ -895,9 +927,10 @@ async function updateUI() {
             fetchAndUpdateIntervalDisplay(); // Fire and forget is ok here
         }
 
-        // Fetch core data and history/measurements concurrently
-        const [dataRes, histRes] = await Promise.allSettled([
+        // Fetch core data, disk info, and history/measurements concurrently
+        const [dataRes, diskRes, histRes] = await Promise.allSettled([
             fetchData('/data'),
+            fetchData('/diskInfo'),
             fetchData('/loadMeasurement')
         ]);
 
@@ -952,7 +985,7 @@ async function updateUI() {
             console.error('Failed core data fetch:', dataRes.reason || 'Unknown Error');
             showToast('Error fetching core device data! Check connection.', 'error', 10000);
             // Mark relevant widgets as errored if they were previously loading
-            [El.tempWidget, El.humidWidget, El.stageWidget, El.pumpCountWidget, El.vpdWidget, El.uptimeWidget, El.systemStatusWidget].forEach(el => {
+            [El.tempWidget, El.humidWidget, El.stageWidget, El.pumpCountWidget, El.vpdWidget, El.uptimeWidget, El.diskWidget, El.systemStatusWidget].forEach(el => {
                 if (el?.classList.contains('widget-loading')) { // Check if still loading
                     el.classList.remove('widget-loading');
                     const h3 = el.querySelector('h3'); if(h3) h3.innerHTML='<span class="text-danger small">Error</span>';
@@ -960,6 +993,46 @@ async function updateUI() {
                     el.classList.add('border', 'border-danger');
                 }
             });
+        }
+
+        // --- Process Disk Info ---
+        if (diskRes.status === 'fulfilled' && diskRes.value) {
+            const diskData = diskRes.value;
+            const freePercent = parseFloat(diskData.free_percent);
+            const freeBytes = diskData.free_bytes;
+            
+            // Update disk widget
+            if (El.diskFreePercent) {
+                El.diskFreePercent.textContent = `${freePercent.toFixed(1)}%`;
+            }
+            if (El.diskFreeBytes) {
+                // Format bytes to KB
+                const freeKB = (freeBytes / 1024).toFixed(1);
+                El.diskFreeBytes.textContent = `${freeKB} KB`;
+            }
+            
+            // Apply conditional styling based on free space
+            if (El.diskWidget) {
+                El.diskWidget.classList.remove('widget-loading');
+                // Remove any previous warning classes
+                El.diskWidget.classList.remove('border', 'border-warning', 'border-danger');
+                
+                // Add warning if space is low
+                if (freePercent < 10) {
+                    El.diskWidget.classList.add('border', 'border-danger');
+                    console.warn('[DISK] Critical: Less than 10% free space!');
+                } else if (freePercent < 20) {
+                    El.diskWidget.classList.add('border', 'border-warning');
+                    console.warn('[DISK] Warning: Less than 20% free space');
+                }
+            }
+        } else {
+            console.warn('Disk info fetch failed:', diskRes.reason || 'Unknown Error');
+            if (El.diskWidget) {
+                El.diskWidget.classList.remove('widget-loading');
+                if (El.diskFreePercent) El.diskFreePercent.textContent = 'N/A';
+                if (El.diskFreeBytes) El.diskFreeBytes.textContent = 'unavailable';
+            }
         }
 
         // --- Process History & Statistics ---
@@ -1068,7 +1141,17 @@ async function updateUI() {
         clearTimeout(refreshTimeoutId);
         // Only schedule next update if the system isn't in the restarting state
         if (!document.body.classList.contains('system-restarting')) {
-             refreshTimeoutId = setTimeout(updateUI, REFRESH_INTERVAL);
+             // OPTIMIZACIÓN: Usar backoff exponencial si heap está bajo
+             // Use lastCoreData captured from the last successful /data fetch
+             const currentHeap = (window.lastCoreData && typeof window.lastCoreData.freeHeap === 'number')
+                 ? window.lastCoreData.freeHeap
+                 : 20000; // Default alto si no hay dato
+             let nextInterval = REFRESH_INTERVAL;
+             if (currentHeap < LOW_HEAP_THRESHOLD) {
+                 nextInterval = REFRESH_INTERVAL * 2; // Duplicar intervalo si heap bajo (30s → 60s)
+                 console.warn(`[HEAP LOW] ${currentHeap} bytes. Slowing polling to ${nextInterval/1000}s`);
+             }
+             refreshTimeoutId = setTimeout(updateUI, nextInterval);
         }
     }
 }
@@ -1849,4 +1932,10 @@ document.addEventListener('DOMContentLoaded', async () => {
          showGlobalLoader(false); // Always hide global loader bar after init attempt
          // Auto-refresh timer is started within the `updateUI` function's finally block if init was successful
     }
+});
+
+// Logs download button (NEW)
+El.downloadLogsBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    downloadLogs();
 });

@@ -671,6 +671,7 @@
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav ms-auto align-items-center">
                     <li class="nav-item me-2"><a class="nav-link active" href="index.html" aria-current="page">Dashboard</a></li>
+                    <li class="nav-item me-2"><a class="nav-link" href="#" id="downloadLogsBtn" title="Download diagnostic & health logs"><i class="fas fa-file-download"></i> Logs</a></li>
                     <li class="nav-item me-2"><a class="nav-link" href="#" id="debugLogsBtn" title="View Debug Logs"><i class="fas fa-bug"></i> Debug</a></li>
                     <li class="nav-item me-2"><a class="nav-link" href="update.html" title="OTA Firmware Update"><i class="fas fa-cloud-upload-alt"></i> Update</a></li>
                     <li class="nav-item ms-2"><button class="btn btn-sm btn-outline-light" id="btnDev1" type="button" title="Ir a greennanny.local">Nanny 1</button></li>
@@ -741,7 +742,7 @@
 
                     <!-- Row 2: Derived Data & Status -->
                      <div class="row gy-4">
-                        <div class="col-lg-4 col-md-6">
+                        <div class="col-lg-3 col-md-6">
                             <div class="widget-dark widget-loading" id="vpdWidget">
                                 <div class="widget-title">
                                      <span><i class="fas fa-wind me-2 opacity-75" aria-hidden="true"></i>VPD</span>
@@ -750,13 +751,25 @@
                                 <div class="widget-body"><h3 id="vpd">- kPa</h3></div>
                             </div>
                         </div>
-                         <div class="col-lg-4 col-md-6">
+                         <div class="col-lg-3 col-md-6">
                             <div class="widget-dark widget-loading" id="uptimeWidget">
                                 <div class="widget-title"><i class="fas fa-stopwatch me-2 opacity-75" aria-hidden="true"></i>System Uptime</div>
                                 <div class="widget-body"><h3 id="totalElapsedTime">-</h3></div>
                             </div>
                         </div>
-                        <div class="col-lg-4 col-md-12">
+                        <div class="col-lg-3 col-md-6">
+                            <div class="widget-dark widget-loading" id="diskWidget">
+                                <div class="widget-title">
+                                    <i class="fas fa-hdd me-2 opacity-75" aria-hidden="true"></i>Disk Space
+                                    <i class="fas fa-info-circle text-muted ms-1 cursor-help" data-bs-toggle="tooltip" data-bs-placement="top" title="Available space on the NodeMCU filesystem (LittleFS)" aria-label="Disk Space Information"></i>
+                                </div>
+                                <div class="widget-body">
+                                    <h3 id="diskFreePercent">- %</h3>
+                                    <small class="text-muted"><span id="diskFreeBytes">-</span> free</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-3 col-md-12">
                              <div class="widget-dark widget-loading" id="systemStatusWidget">
                                  <div class="widget-title">System Status</div>
                                  <div class="widget-body">

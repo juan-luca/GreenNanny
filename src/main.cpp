@@ -4,7 +4,9 @@
 #include <ESP8266NetBIOS.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPUpdateServer.h>
-#include <ArduinoOTA.h>
+#ifndef DISABLE_OTA
+#include <ArduinoOTA.h>  // Conditional: saves ~2-3KB RAM when disabled
+#endif
 #include <DNSServer.h>
 #include <DHT.h>
 #include <LittleFS.h>
@@ -35,17 +37,26 @@ const int  daylightOffset_sec = 0;         // nada de DST
 #define FAN_PIN D4          // Pin para ventilador
 #define EXTRACTOR_PIN D5    // Pin para turbina de extracción
 
-#define MAX_JSON_OBJECTS 500 // Max measurements to store
+#define MAX_JSON_OBJECTS 30 // Reducido a 30 para liberar más RAM (~2.4KB total, ~1.2KB extra vs 50). Con mediciones cada 3h, 30 = 90 horas de historial
 #define STAGES_CONFIG_FILE "/stages_config.json" // File for custom stage config
 #define THRESHOLDS_CONFIG_FILE "/thresholds_config.json" // File for fan/extractor thresholds
 #define DISCORD_CONFIG_FILE "/discord_config.json" // File for Discord webhook configuration
 
-// Debug log buffer
-#define DEBUG_LOG_SIZE 200 // Número de mensajes de log a mantener
+// Debug log buffer (reducido a 20 para liberar más RAM - cada slot ~80 bytes = 1.6KB total vs 2.4KB con 30)
+#define DEBUG_LOG_SIZE 20
 String debugLogBuffer[DEBUG_LOG_SIZE];
 int debugLogIndex = 0;
 int debugLogCount = 0;
 bool discordProcessing = false;
+
+// Health log skip counter (NEW)
+uint32_t healthLogSkipCount = 0;
+
+// Heap emergency thresholds (ajustados por requests HTTP agresivos)
+#define HEAP_EMERGENCY_THRESHOLD 12000  // Crítico: reinicio inmediato (subido de 10KB para evitar loop)
+#define HEAP_WARNING_THRESHOLD 15000    // Warning: purgar y desactivar funciones no críticas
+#define HEAP_SAFE_THRESHOLD 16000       // Nivel ideal de heap libre
+#define HEAP_LOGGING_THRESHOLD 14000    // Logging ultra-compacto si heap < 14KB
 
 // RTC - REMOVED
 // RTC_DS1307 rtc;
@@ -64,6 +75,12 @@ ESP8266HTTPUpdateServer httpUpdater;
 const char* OTA_PASSWORD = "greennanny2024"; // Cambiar esto por una contraseña segura
 bool otaInProgress = false;
 
+// Log file paths and limits (NEW)
+static const char* HEALTH_LOG_FILE = "/health_log.txt";
+static const char* HEALTH_LOG_PREV_FILE = "/health_log.prev";
+static const char* LAST_RESTART_FILE = "/last_restart_reason.txt";
+static const size_t HEALTH_LOG_MAX_BYTES = 64 * 1024; // 64KB rotation threshold
+
 // Almacenamiento de mediciones
 String measurements[MAX_JSON_OBJECTS];
 int jsonIndex = 0;
@@ -81,8 +98,8 @@ String targetPass = "";
 unsigned long connectionAttemptStartMillis = 0;
 
 const char* HOSTNAME = "greennanny"; // Nombre base preferido
-String actualHostname = "";          // Hostname usado para DHCP (opcional)
-String mdnsAdvertisedName = "";      // Hostname efectivo anunciado por mDNS/NBNS
+// REMOVED: actualHostname and mdnsAdvertisedName to save ~160 bytes RAM
+// These will be created as local variables only when needed
 
 // WiFi por defecto si no hay configuracin guardada
 const char* DEFAULT_WIFI_SSID = "Personal-244";
@@ -101,6 +118,10 @@ time_t ntpBootEpoch = 0;          // Epoch time (seconds) of the first successfu
 bool simulateSensors = false; // CAMBIAR A false PARA USO REAL
 float simulatedHumidity = 55.0;
 float simulatedTemperature = 25.0;
+
+// Caché de lecturas del sensor (actualizadas solo en mediciones programadas/manuales)
+float cachedHumidity = -1.0;
+float cachedTemperature = -99.0;
 
 // Modo test para simular diferentes condiciones sin sensor
 bool testModeEnabled = false;
@@ -214,6 +235,13 @@ void setupOTA();               // NEW: Setup OTA updates
 void startAPMode();
 bool syncNtpTime(); // PROTOTIPO NTP (Modified: no RTC interaction)
 void startNameServices(); // Inicia mDNS/NBNS con greennanny, greennanny2, ...
+// Health Logging & Restart Management (NEW)
+void appendHealthLog(const char* eventType = "PERIODIC");
+void handleHealthLog(); // Tail health log
+void handleDownloadLogs(); // Download aggregated logs
+void scheduleRestart(const char* reason); // Persist reason & restart
+void diagnoseHeapUsage(); // NEW: Diagnose which component consumes most heap
+bool resetComponentProactive(const char* component); // NEW: RCP - Reset component to free memory
 // Network & Config
 void loadWifiCredentials();
 void handleConnectWifi(); // Manual connection attempt via UI
@@ -254,6 +282,10 @@ void handleGetDiscordConfig(); // API endpoint to get Discord config
 void handleSetDiscordConfig(); // API endpoint to set Discord config
 void handleTestDiscordAlert(); // API endpoint to send test alert
 void handleGetLogs(); // API endpoint to get debug logs
+void handleHealth(); // API endpoint for system health monitoring
+void handleDiskInfo(); // API endpoint for filesystem information
+void handleHealthLog(); // API endpoint to tail health log (NEW)
+void handleDownloadLogs(); // API endpoint to download logs (NEW)
 // Stage Control
 int getCurrentStageIndex(unsigned long daysElapsed); // Accepts daysElapsed as arg
 void loadManualStage();
@@ -282,56 +314,98 @@ void handleRoot(); // Redirects / to index.html or config.html
 // Utilities
 float getHumidity();
 float getTemperature();
+float updateHumidityCache();    // Updates sensor cache - called ONLY in controlIndependiente()
+float updateTemperatureCache(); // Updates sensor cache - called ONLY in controlIndependiente()
 float calculateVPD(float temperature, float humidity);
 void handleSerialCommands(); // Optional serial control (updated for NTP time)
 
 
 // --- IMPLEMENTACIONES ---
 
-// Comprueba si un nombre .local ya existe en la red (usa el resolver mDNS de lwIP)
+// Comprueba si un nombre .local ya existe en la red
 static bool isMdnsNameTaken(const String& hostNoSuffix) {
     if (WiFi.status() != WL_CONNECTED) return false; // Sin WiFi, no podemos comprobar, asumir libre
-    IPAddress ip;
+    
+    // Usar WiFi.hostByName con múltiples intentos para mayor confiabilidad
     String fqdn = hostNoSuffix + ".local";
-    int res = WiFi.hostByName(fqdn.c_str(), ip);
-    if (res == 1) {
-        // Considerar tomado si no es 0.0.0.0
-        return (ip[0] != 0 || ip[1] != 0 || ip[2] != 0 || ip[3] != 0);
+    
+    for (int attempt = 0; attempt < 3; attempt++) {
+        IPAddress ip;
+        int res = WiFi.hostByName(fqdn.c_str(), ip);
+        if (res == 1 && (ip[0] != 0 || ip[1] != 0 || ip[2] != 0 || ip[3] != 0)) {
+            Serial.print("[mDNS CHECK] "); Serial.print(fqdn); 
+            Serial.print(" resuelve a: "); Serial.println(ip);
+            return true;
+        }
+        if (attempt < 2) {
+            delay(400); // Más tiempo entre intentos para propagación mDNS
+            yield(); // Permitir que WiFi procese
+        }
     }
+    
     return false;
 }
 
 // Inicia mDNS/NBNS probando greennanny, greennanny2, greennanny3...
+// Prueba SIEMPRE secuencialmente para garantizar orden predecible
 void startNameServices() {
     const char* base = HOSTNAME; // "greennanny"
     const int maxSuffix = 9;     // greennanny .. greennanny9
 
-    // Intentar nombres: sin sufijo primero, luego 2..9
+    uint32_t chipId = ESP.getChipId();
+    Serial.print("[mDNS] ChipID: 0x"); Serial.println(chipId, HEX);
+    
+    // Esperar un momento para que la red se estabilice y mDNS se propague
+    Serial.println("[mDNS] Esperando 2s para estabilización de red...");
+    delay(2000);
+    
+    Serial.println("[mDNS] Probando nombres secuencialmente: greennanny, greennanny2, greennanny3...");
+
     String chosen = "";
-    for (int i = 1; i <= maxSuffix; i++) {
+    
+    // Probar secuencialmente: greennanny, greennanny2, greennanny3... hasta greennanny9
+    for (int i = 1; i <= maxSuffix && chosen.length() == 0; i++) {
         String candidate = (i == 1) ? String(base) : String(base) + String(i);
-        // No iniciar si ya hay otro con ese nombre
+        Serial.print("[mDNS] Probando: "); Serial.print(candidate); Serial.print(".local ... ");
+        
+        // Verificar si el nombre está ocupado
         if (isMdnsNameTaken(candidate)) {
-            Serial.print("[mDNS] Detectado en red: "); Serial.print(candidate); Serial.println(".local (ocupado)");
+            Serial.println("OCUPADO");
             continue;
         }
+        
+        Serial.print("LIBRE, intentando asignar... ");
+        
+        // Intentar iniciar mDNS con este nombre
         if (MDNS.begin(candidate.c_str())) {
             chosen = candidate;
             MDNS.addService("http", "tcp", 80);
-            Serial.print("[mDNS] Anunciado como: "); Serial.print(candidate); Serial.println(".local");
+            Serial.println("✓ ASIGNADO");
+            Serial.print("[mDNS SUCCESS] Anunciado como: "); Serial.print(chosen); Serial.println(".local");
             break;
+        } else {
+            Serial.println("✗ FALLO MDNS.begin()");
         }
-        delay(50);
+        
+        delay(150); // Dar tiempo entre intentos
     }
+    
+    // Si no se pudo asignar ningún nombre del 1-9, usar fallback con ChipID
     if (chosen.length() == 0) {
-        Serial.println("[mDNS ERROR] No se pudo iniciar mDNS con ninguno de los nombres.");
+        Serial.println("[mDNS ERROR] Todos los nombres (1-9) están ocupados o fallaron.");
+        String fallback = String(base) + "-" + String(chipId & 0xFFFF, HEX);
+        Serial.print("[mDNS] Intentando nombre de último recurso: "); Serial.println(fallback);
+        if (MDNS.begin(fallback.c_str())) {
+            chosen = fallback;
+            MDNS.addService("http", "tcp", 80);
+            Serial.print("[mDNS] Anunciado como: "); Serial.print(chosen); Serial.println(".local");
+        }
     }
-    mdnsAdvertisedName = chosen; // Puede quedar vacío si falló mDNS
-
-    // NBNS para Windows
-    if (mdnsAdvertisedName.length()) {
-        if (NBNS.begin(mdnsAdvertisedName.c_str())) {
-            Serial.print("[NBNS] Anunciado como: http://"); Serial.print(mdnsAdvertisedName); Serial.println("/");
+    
+    // NBNS para Windows - using chosen directly (no global storage)
+    if (chosen.length()) {
+        if (NBNS.begin(chosen.c_str())) {
+            Serial.print("[NBNS SUCCESS] Anunciado como: http://"); Serial.print(chosen); Serial.println("/");
         } else {
             Serial.println("[NBNS WARN] No se pudo iniciar NBNS.");
         }
@@ -413,8 +487,10 @@ void setup() {
 
     // Montar el sistema de archivos
     if (!LittleFS.begin()) {
-        Serial.println("[ERROR] Falló al montar LittleFS. Verifica formato.");
-        while (true) { delay(1000); }
+        Serial.println("[FATAL ERROR] Falló al montar LittleFS. Reiniciando en 3s...");
+        Serial.println("[INFO] Si el problema persiste, reflashea el filesystem.");
+        delay(3000);
+        ESP.restart();  // Restart limpio en lugar de hard lock
     } else {
         Serial.println("[INFO] LittleFS montado correctamente.");
         #ifdef ESP8266
@@ -521,15 +597,217 @@ void setup() {
     setupServer();
 
     Serial.println("[INFO] === Setup completo. Sistema listo. ===");
+    // Crear archivo de health log con encabezado si no existe (NEW)
+    if (!LittleFS.exists(HEALTH_LOG_FILE)) {
+        File hf = LittleFS.open(HEALTH_LOG_FILE, "w");
+        if (hf) { hf.println("{\"evt\":\"HEADER\",\"ms\":0,\"epoch\":0,\"wifi\":-1,\"rssi\":0,\"heap\":0,\"frag\":0,\"maxblk\":0,\"fs_used\":0,\"fs_tot\":0,\"meas\":0}"); hf.close(); }
+    }
 }
 
 void loop() {
+    // ===== HARDWARE WATCHDOG FEED =====
+    ESP.wdtFeed(); // Feed del watchdog hardware al inicio de cada loop
+    
     unsigned long currentMillis = millis(); // Obtener millis al inicio del loop
+    
+    // ===== GESTIÓN AUTOMÁTICA DE HEAP CON DIAGNÓSTICO Y RCP (NEW) =====
+    static unsigned long lastHeapCheck = 0;
+    static bool rcpAttempted = false;  // Bandera GLOBAL - solo se resetea al arrancar
+    static uint32_t rcpAttemptCount = 0;  // Contador de intentos de RCP
+    
+    if (currentMillis - lastHeapCheck > 60000UL) {  // Cada 60 segundos
+        uint32_t freeHeap = ESP.getFreeHeap();
+        
+        // NIVEL CRÍTICO: <10KB - Diagnóstico + RCP (solo 1 vez) + Reinicio
+        if (freeHeap < HEAP_EMERGENCY_THRESHOLD) {
+            Serial.print("[HEAP CRITICAL] Solo ");
+            Serial.print(freeHeap);
+            Serial.println(" bytes libres! Ejecutando protocolo de emergencia...");
+            
+            // 1. Ejecutar diagnóstico para identificar el culpable
+            diagnoseHeapUsage();
+            
+            // 2. Intentar RCP solo UNA VEZ en toda la vida del boot
+            if (!rcpAttempted) {
+                rcpAttempted = true;  // NUNCA se resetea hasta el próximo boot
+                rcpAttemptCount++;
+                
+                Serial.println("[HEAP] Primera y única oportunidad de RCP en este boot.");
+                
+                // Determinar qué componente limpiar
+                uint32_t measEstimate = jsonIndex * 150;
+                uint32_t debugEstimate = DEBUG_LOG_SIZE * 80;
+                uint8_t frag = ESP.getHeapFragmentation();
+                
+                String componentToReset = "UNKNOWN";
+                if (frag > 40) {
+                    componentToReset = "FRAGMENTATION";
+                } else if (measEstimate > 5000) {
+                    componentToReset = "MEASUREMENTS";
+                } else if (debugEstimate > measEstimate && debugEstimate > 2000) {
+                    componentToReset = "DEBUG_BUFFER";
+                } else {
+                    componentToReset = "UNKNOWN";
+                }
+                
+                Serial.print("[HEAP] Intentando RCP en componente: ");
+                Serial.println(componentToReset);
+                
+                uint32_t heapBefore = ESP.getFreeHeap();
+                bool rcpSuccess = resetComponentProactive(componentToReset.c_str());
+                uint32_t heapAfter = ESP.getFreeHeap();
+                int32_t recovered = (int32_t)heapAfter - (int32_t)heapBefore;
+                
+                // Si el RCP no recuperó al menos 2KB O el heap sigue <10KB, reiniciar
+                if (!rcpSuccess || recovered < 2000 || heapAfter < HEAP_EMERGENCY_THRESHOLD) {
+                    Serial.print("[HEAP] RCP recuperó solo ");
+                    Serial.print(recovered);
+                    Serial.println(" bytes. Insuficiente, reiniciando...");
+                    appendHealthLog("HEAP_CRITICAL_RCP_FAILED");
+                    scheduleRestart("HEAP_EMERGENCY_POST_RCP");
+                } else {
+                    Serial.print("[HEAP] RCP exitoso! Recuperados ");
+                    Serial.print(recovered);
+                    Serial.println(" bytes. Continuando operación.");
+                }
+            } else {
+                // Ya se intentó RCP antes en este boot, reiniciar sin más intentos
+                Serial.println("[HEAP] RCP ya intentado anteriormente en este boot. Reiniciando...");
+                appendHealthLog("HEAP_CRITICAL_PERSISTENT");
+                scheduleRestart("HEAP_EMERGENCY_PERSISTENT");
+            }
+        }
+        // NIVEL WARNING: <14KB - Limpieza preventiva suave
+        else if (freeHeap < HEAP_WARNING_THRESHOLD) {
+            // NO resetear rcpAttempted aquí, solo advertir
+            if (jsonIndex > 100) {
+                Serial.print("[HEAP WARNING] ");
+                Serial.print(freeHeap);
+                Serial.print(" bytes libres, purgando mediciones antiguas (total: ");
+                Serial.print(jsonIndex);
+                Serial.println(")...");
+                
+                int toRemove = min(50, jsonIndex - 80);  // Mantener al menos 80
+                for (int i = toRemove; i < jsonIndex; i++) {
+                    measurements[i - toRemove] = measurements[i];
+                }
+                jsonIndex -= toRemove;
+                saveMeasurementFile(arrayToString(measurements, jsonIndex));
+                Serial.print("[HEAP] Mediciones reducidas a ");
+                Serial.println(jsonIndex);
+            }
+        }
+        // Heap está bien, no hacer nada (NO resetear rcpAttempted - permanece true hasta próximo boot)
+        
+        lastHeapCheck = currentMillis;
+    }
+    
+    // ===== WATCHDOG SOFTWARE + HANG DETECTOR =====
+    static unsigned long lastLoopTime = 0;
+    static unsigned long hangCounter = 0;
+    unsigned long loopDuration = millis() - lastLoopTime;
+    
+    if (loopDuration > 30000 && lastLoopTime > 0) {  // Loop tomó más de 30s
+        hangCounter++;
+        Serial.print("[WATCHDOG] Loop bloqueado por ");
+        Serial.print(loopDuration / 1000);
+        Serial.print("s! (hang #");
+        Serial.print(hangCounter);
+        Serial.println(") Reiniciando...");
+        delay(500);
+        ESP.restart();
+    }
+    lastLoopTime = millis();
+    
+    currentMillis = millis(); // Actualizar después de operaciones
+
+    // ===== PERSISTENT HEALTH CONDITIONS (NEW) =====
+    static unsigned long lowHeapSince = 0;
+    static unsigned long wifiDownSince = 0;
+    uint32_t freeHeapInstant = ESP.getFreeHeap();
+    if (freeHeapInstant < 9000) {
+        if (lowHeapSince == 0) lowHeapSince = currentMillis; // start tracking
+    } else {
+        lowHeapSince = 0; // recovered
+    }
+    if (WiFi.status() != WL_CONNECTED && WiFi.getMode() == WIFI_STA) {
+        if (wifiDownSince == 0) wifiDownSince = currentMillis;
+    } else {
+        wifiDownSince = 0;
+    }
+    // Preventive restarts
+    if (lowHeapSince && (currentMillis - lowHeapSince > 600000UL)) { // 10 min
+        if (currentMillis > 10000) appendHealthLog("LOW_HEAP"); // only log if stable
+        scheduleRestart("LOW_HEAP_PERSISTENT");
+    }
+    if (wifiDownSince && (currentMillis - wifiDownSince > 7200000UL)) { // 2h
+        if (currentMillis > 10000) appendHealthLog("WIFI_DOWN"); // only log if stable
+        scheduleRestart("WIFI_DOWN_LONG");
+    }
+
+    // ===== PERIODIC HEALTH LOG SNAPSHOT =====
+    static unsigned long lastHealthLog = 0;
+    static bool healthLogReady = false;
+    // Wait 10 seconds after boot before first health log to ensure everything is stable
+    if (!healthLogReady && currentMillis > 10000) {
+        healthLogReady = true;
+        lastHealthLog = currentMillis; // Initialize timer
+    }
+    if (healthLogReady && (currentMillis - lastHealthLog >= 300000UL)) { // cada 5 minutos
+        appendHealthLog("PERIODIC");
+        lastHealthLog = currentMillis;
+    }
+
+    // ===== AUTO-RECONNECT WIFI MEJORADO =====
+    static unsigned long lastWiFiCheck = 0;
+    static int wifiFailCount = 0;
+    
+    if (currentMillis - lastWiFiCheck > 30000) {  // Cada 30s
+        if (WiFi.status() != WL_CONNECTED && wifiState == IDLE && WiFi.getMode() == WIFI_STA) {
+            wifiFailCount++;
+            Serial.print("[WIFI] Desconectado! (fallo #");
+            Serial.print(wifiFailCount);
+            Serial.println(") Intentando reconectar...");
+            
+            // Si han fallado más de 3 intentos, hacer reset completo del WiFi
+            if (wifiFailCount > 3) {
+                Serial.println("[WIFI] Demasiados fallos. Reset completo de WiFi...");
+                WiFi.disconnect(true);
+                delay(500);
+                WiFi.mode(WIFI_OFF);
+                delay(500);
+                WiFi.mode(WIFI_STA);
+                delay(500);
+                
+                // Recargar credenciales y reconectar
+                loadWifiCredentials();
+                wifiFailCount = 0; // Resetear contador después de reset completo
+            } else {
+                WiFi.reconnect();
+            }
+            
+            // Si llevan 12 horas desconectado (24 checks), reiniciar el ESP
+            if (wifiFailCount >= 1440) { // 24 checks/hora * 60 horas = 1440
+                Serial.println("[WIFI CRITICAL] 12 horas sin WiFi. Reiniciando dispositivo...");
+                delay(1000);
+                ESP.restart();
+            }
+        } else if (WiFi.status() == WL_CONNECTED) {
+            // Resetear contador si la conexión se restableció
+            if (wifiFailCount > 0) {
+                Serial.println("[WIFI] Conexión restablecida! Reseteando contador.");
+                wifiFailCount = 0;
+            }
+        }
+        lastWiFiCheck = currentMillis;
+    }
 
     // Manejar OTA updates (solo si está conectado a WiFi)
+#ifndef DISABLE_OTA
     if (WiFi.status() == WL_CONNECTED && !otaInProgress) {
         ArduinoOTA.handle();
     }
+#endif
 
     // Manejar clientes HTTP
     server.handleClient();
@@ -553,8 +831,9 @@ void loop() {
         
         WiFi.disconnect();
         WiFi.mode(WIFI_STA);
-        actualHostname = String(HOSTNAME) + "-" + String(ESP.getChipId() & 0xFFF, HEX);
-        WiFi.hostname(actualHostname);
+        // Generate hostname locally (no global storage)
+        String localHostname = String(HOSTNAME) + "-" + String(ESP.getChipId() & 0xFFF, HEX);
+        WiFi.hostname(localHostname);
         WiFi.begin(targetSsid.c_str(), targetPass.c_str());
         
         wifiState = CONNECTION_IN_PROGRESS;
@@ -627,14 +906,15 @@ void loop() {
     if (currentMillis >= nextMeasureTimestamp) {
         Serial.println("[INFO] Hora de medición programada alcanzada.");
         controlIndependiente();  // Lógica automática de medición y riego
+        
+        // Control de ventilador/extractor SOLO durante las mediciones programadas
+        controlFanAndExtractor();
+        
         // Programar la siguiente medición
         nextMeasureTimestamp = currentMillis + (measurementInterval * 3600000UL);
         Serial.print("[INFO] Próxima medición programada para millis: ");
         Serial.println(nextMeasureTimestamp);
     }
-
-    // --- Control automático de ventilador y turbina basado en umbrales ---
-    controlFanAndExtractor();
 
     // --- Actualización del modo test ---
     if (testModeEnabled) {
@@ -693,8 +973,24 @@ void loop() {
         if (pumpAutoOff) Serial.print(" (Auto-Off)");
         Serial.println();
 
+        uint32_t freeHeap = ESP.getFreeHeap();
+        uint8_t heapFrag = ESP.getHeapFragmentation();
         Serial.print("[DEBUG] Memoria Libre: ");
-        Serial.println(ESP.getFreeHeap());
+        Serial.print(freeHeap);
+        Serial.print(" bytes, Fragmentación: ");
+        Serial.print(heapFrag);
+        Serial.println("%");
+        
+        // ADVERTENCIA SI HAY POCA MEMORIA
+        if (freeHeap < 10000) {
+            Serial.println("[WARN] ⚠️  HEAP BAJO! < 10KB - Sistema en riesgo");
+        } else if (freeHeap < 15000) {
+            Serial.println("[WARN] Heap moderadamente bajo < 15KB");
+        }
+        
+        if (heapFrag > 50) {
+            Serial.println("[WARN] ⚠️  HEAP MUY FRAGMENTADO! > 50%");
+        }
 
         if (WiFi.status() == WL_CONNECTED) {
             Serial.print("[DEBUG] WiFi RSSI: ");
@@ -704,7 +1000,24 @@ void loop() {
         }
 
         Serial.print("[DEBUG] NTP Synced: "); Serial.println(ntpTimeSynchronized ? "Yes" : "No");
+        
+        // Info del filesystem
+        FSInfo fs_info;
+        LittleFS.info(fs_info);
+        uint32_t usedBytes = fs_info.usedBytes;
+        uint32_t totalBytes = fs_info.totalBytes;
+        float usedPercent = (totalBytes > 0) ? (usedBytes * 100.0 / totalBytes) : 0;
+        Serial.print("[DEBUG] Filesystem: ");
+        Serial.print(usedBytes);
+        Serial.print("/");
+        Serial.print(totalBytes);
+        Serial.print(" bytes (");
+        Serial.print(usedPercent, 1);
+        Serial.println("% usado)");
+        
         Serial.println("--------------------");
+        // Extra: snapshot log right after debug block for richer context (only after stable boot)
+        if (currentMillis > 15000) appendHealthLog("DEBUG");
     }
 }
 
@@ -745,42 +1058,61 @@ void setupFanAndExtractor() {
 }
 
 // Obtiene la humedad (real o simulada)
-// MODIFIED: Non-blocking sensor read
+// MODIFIED: NUNCA lee del sensor, solo retorna caché actualizado por controlIndependiente()
 float getHumidity() {
-    // Si el modo test está activo, retornar valor simulado
+    if (testModeEnabled) return simulatedHumidity;
+    if (simulateSensors) return simulatedHumidity;
+    return cachedHumidity;
+}
+
+// Función interna para actualizar cache de humedad (llamada SOLO desde controlIndependiente y /takeMeasurement)
+float updateHumidityCache() {
     if (testModeEnabled) {
-        return simulatedHumidity;
+        cachedHumidity = simulatedHumidity;
+        return cachedHumidity;
     }
     
-    // Lectura simple con un reintento corto para evitar NaN del DHT11
+    if (simulateSensors) {
+        cachedHumidity = simulatedHumidity;
+        return cachedHumidity;
+    }
+    
     float h = dht.readHumidity();
-    if (isnan(h)) {
-        delay(100);
-        h = dht.readHumidity();
+    if (!isnan(h)) {
+        cachedHumidity = h;
     }
-    if (isnan(h)) {
-        Serial.println("[WARN] Humedad DHT inválida (NaN)");
-        return -1.0; // Indicador de invalidez
-    }
-    return h;
+    // Si es NaN, mantener último valor válido
+    
+    return cachedHumidity;
 }
-// MODIFIED: Non-blocking sensor read
+
+// Obtiene la temperatura (real o simulada)
+// MODIFIED: NUNCA lee del sensor, solo retorna caché actualizado por controlIndependiente()
 float getTemperature() {
-    // Si el modo test está activo, retornar valor simulado
+    if (testModeEnabled) return simulatedTemperature;
+    if (simulateSensors) return simulatedTemperature;
+    return cachedTemperature;
+}
+
+// Función interna para actualizar cache de temperatura (llamada SOLO desde controlIndependiente y /takeMeasurement)
+float updateTemperatureCache() {
     if (testModeEnabled) {
-        return simulatedTemperature;
+        cachedTemperature = simulatedTemperature;
+        return cachedTemperature;
+    }
+    
+    if (simulateSensors) {
+        cachedTemperature = simulatedTemperature;
+        return cachedTemperature;
     }
     
     float t = dht.readTemperature();
-    if (isnan(t)) {
-        delay(100);
-        t = dht.readTemperature();
+    if (!isnan(t)) {
+        cachedTemperature = t;
     }
-    if (isnan(t)) {
-        Serial.println("[WARN] Temperatura DHT inválida (NaN)");
-        return -99.0; // Indicador de invalidez
-    }
-    return t;
+    // Si es NaN, mantener último valor válido
+    
+    return cachedTemperature;
 }
 
 // Calcula el VPD (Déficit de Presión de Vapor) en kPa
@@ -818,6 +1150,535 @@ int getCurrentStageIndex(unsigned long daysElapsed) {
     }
     // Si el tiempo transcurrido supera la duración total de todas las etapas
     return numStages - 1; // Permanecer en la última etapa
+}
+
+// ===== ENDPOINT /health - MONITOREO DE SALUD DEL SISTEMA =====
+void handleHealth() {
+    StaticJsonDocument<512> doc;
+    
+    // Métricas básicas
+    doc["uptime_ms"] = millis();
+    doc["free_heap"] = ESP.getFreeHeap();
+    doc["heap_fragmentation"] = ESP.getHeapFragmentation();
+    doc["max_free_block"] = ESP.getMaxFreeBlockSize();
+    
+    // WiFi
+    if (WiFi.status() == WL_CONNECTED) {
+        doc["wifi_rssi"] = WiFi.RSSI();
+        doc["wifi_status"] = "connected";
+    } else {
+        doc["wifi_rssi"] = 0;
+        doc["wifi_status"] = "disconnected";
+    }
+    
+    // Contadores
+    doc["measurements_count"] = jsonIndex;
+    doc["logs_count"] = debugLogCount;
+    doc["discord_processing"] = discordProcessing;
+    doc["ntp_synced"] = ntpTimeSynchronized;
+    doc["health_log_skipped"] = healthLogSkipCount;  // Agregar contador de SKIP al endpoint
+    
+    // Reset reason (current) and persisted restart reason if any
+    doc["reset_reason"] = ESP.getResetReason();
+    if (LittleFS.exists(LAST_RESTART_FILE)) {
+        File rf = LittleFS.open(LAST_RESTART_FILE, "r");
+        if (rf) {
+            String reason = rf.readStringUntil('\n');
+            reason.trim();
+            rf.close();
+            if (reason.length()) doc["last_restart_reason"] = reason;
+        }
+    }
+    
+    // Indicadores de salud
+    bool healthy = true;
+    String issues = "";
+    
+    if (ESP.getFreeHeap() < 10000) {
+        healthy = false;
+        issues += "LOW_HEAP,";
+    }
+    if (ESP.getHeapFragmentation() > 50) {
+        healthy = false;
+        issues += "HEAP_FRAGMENTED,";
+    }
+    if (WiFi.status() != WL_CONNECTED && WiFi.getMode() == WIFI_STA) {
+        healthy = false;
+        issues += "WIFI_DOWN,";
+    }
+    if (!ntpTimeSynchronized) {
+        issues += "NTP_NOT_SYNCED,";
+    }
+    
+    doc["healthy"] = healthy;
+    doc["issues"] = issues.length() > 0 ? issues.substring(0, issues.length()-1) : "none";
+    
+    String response;
+    serializeJson(doc, response);
+    
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(healthy ? 200 : 503, "application/json", response);
+}
+
+// ===== HEALTH LOGGING UTILITIES (NEW) =====
+// Append a health snapshot line in compact JSON. eventType may be PERIODIC, LOW_HEAP, WIFI_DOWN, FORCED_RESTART, MANUAL_RESTART
+void appendHealthLog(const char* eventType) {
+    // MODO ULTRA-COMPACTO: Si heap <14KB, usar formato mínimo sin Strings temporales
+    bool lowHeapMode = (ESP.getFreeHeap() < HEAP_LOGGING_THRESHOLD);
+    if (lowHeapMode) {
+        healthLogSkipCount++;  // Contador para distinguir logs ultra-compactos
+    }
+    int fsTries = 0;
+    while (fsTries < 2) {
+        if (LittleFS.begin() && HEALTH_LOG_FILE && HEALTH_LOG_PREV_FILE) break;
+        fsTries++;
+        delay(100);
+    }
+    if (fsTries == 2) {
+        Serial.println("[HEALTH LOG] ERROR: LittleFS no inicia, formateando...");
+        LittleFS.format();
+        ESP.restart();
+        return;
+    }
+    
+    // Collect metrics
+    uint32_t nowMs = millis();
+    time_t now_t = time(nullptr);
+    bool timeValid = ntpTimeSynchronized && (now_t >= ntpBootEpoch);
+    uint64_t epochMs = timeValid ? (uint64_t)now_t * 1000ULL : 0ULL;
+    int wifiStatus = (WiFi.status() == WL_CONNECTED) ? 1 : 0;
+    int32_t rssi = wifiStatus ? WiFi.RSSI() : 0;
+    uint32_t freeHeap = ESP.getFreeHeap();
+    uint8_t heapFrag = ESP.getHeapFragmentation();
+    uint32_t maxBlock = ESP.getMaxFreeBlockSize();
+    FSInfo fs_info;
+    uint32_t usedBytes = 0;
+    uint32_t totalBytes = 0;
+    if (LittleFS.info(fs_info)) {
+        usedBytes = fs_info.usedBytes;
+        totalBytes = fs_info.totalBytes;
+    }
+    uint32_t measCount = jsonIndex;
+
+    // Rotate if oversized, with error handling
+    bool rotated = false;
+    if (LittleFS.exists(HEALTH_LOG_FILE)) {
+        File fsize = LittleFS.open(HEALTH_LOG_FILE, "r");
+        if (fsize) {
+            size_t sz = fsize.size();
+            fsize.close();
+            if (sz > HEALTH_LOG_MAX_BYTES) {
+                LittleFS.remove(HEALTH_LOG_PREV_FILE);
+                LittleFS.rename(HEALTH_LOG_FILE, HEALTH_LOG_PREV_FILE);
+                rotated = true;
+            }
+        } else {
+            // Corrupt file, remove it
+            Serial.println("[HEALTH LOG] ERROR: cannot open log file for size check, removing!");
+            LittleFS.remove(HEALTH_LOG_FILE);
+            // Log cleanup event after removal
+            File f2 = LittleFS.open(HEALTH_LOG_FILE, "a");
+            if (f2) {
+                f2.println("{\"evt\":\"LOG_CLEANUP\",\"msg\":\"health_log.txt removed (open fail)\"}");
+                f2.close();
+            }
+        }
+    }
+
+    File f = LittleFS.open(HEALTH_LOG_FILE, "a");
+    if (!f) {
+        Serial.println("[HEALTH LOG] ERROR: cannot open log file for append, removing!");
+        LittleFS.remove(HEALTH_LOG_FILE);
+        // Try to create a new file and log cleanup event
+        File f2 = LittleFS.open(HEALTH_LOG_FILE, "a");
+        if (f2) {
+            f2.println("{\"evt\":\"LOG_CLEANUP\",\"msg\":\"health_log.txt recreated (append fail)\"}");
+            f2.close();
+        }
+        return;
+    }
+
+    // Write log: ultra-compact mode when heap low, normal mode when safe
+    if (lowHeapMode) {
+        // Ultra-compact: direct writes, no String temporaries to save RAM
+        f.print("{\"evt\":\"");
+        f.print(eventType);
+        f.print("\",\"ms\":");
+        f.print(nowMs);
+        f.print(",\"epoch\":");
+        f.print((unsigned long)(epochMs & 0xFFFFFFFF)); // Low 32 bits
+        f.print(",\"wifi\":");
+        f.print(wifiStatus);
+        f.print(",\"rssi\":");
+        f.print(rssi);
+        f.print(",\"heap\":");
+        f.print(freeHeap);
+        f.print(",\"frag\":");
+        f.print(heapFrag);
+        f.print(",\"meas\":");
+        f.print(measCount);
+        f.print(",\"skipped\":");
+        f.print(healthLogSkipCount);
+        f.println("}");
+    } else {
+        // Normal mode: full String construction with all fields
+        String line = "{";
+        line += "\"evt\":\"" + String(eventType) + "\"";
+        line += ",\"ms\":" + String(nowMs);
+        line += ",\"epoch\":" + String(epochMs);
+        line += ",\"wifi\":" + String(wifiStatus);
+        line += ",\"rssi\":" + String(rssi);
+        line += ",\"heap\":" + String(freeHeap);
+        line += ",\"frag\":" + String(heapFrag);
+        line += ",\"maxblk\":" + String(maxBlock);
+        line += ",\"fs_used\":" + String(usedBytes);
+        line += ",\"fs_tot\":" + String(totalBytes);
+        line += ",\"meas\":" + String(measCount);
+        line += ",\"skipped\":" + String(healthLogSkipCount);
+        line += "}";
+        
+        if (line.length() > 512) {
+            Serial.println("[HEALTH LOG] WARN: línea de log demasiado larga, ignorada");
+            f.close();
+            return;
+        }
+        f.println(line);
+    }
+    
+    f.close();
+    ESP.wdtFeed(); // Alimentar watchdog tras operación de log
+}
+
+// Persist a restart reason and schedule restart shortly
+void scheduleRestart(const char* reason) {
+    Serial.print("[RESTART] Scheduling restart. Reason: "); Serial.println(reason);
+    // Write reason file
+    File rf = LittleFS.open(LAST_RESTART_FILE, "w");
+    if (rf) {
+        rf.println(reason);
+        rf.close();
+    }
+    appendHealthLog(reason); // log reason before restart
+    delay(500);
+    ESP.restart();
+}
+
+// ===== DIAGNÓSTICO DE USO DE HEAP POR COMPONENTE (OPTIMIZADO) =====
+void diagnoseHeapUsage() {
+    // Diagnóstico simplificado para minimizar consumo de heap
+    uint32_t heapStart = ESP.getFreeHeap();
+    uint32_t measurementsEstimate = jsonIndex * 150;
+    uint32_t debugBufferEstimate = DEBUG_LOG_SIZE * 80;
+    uint8_t fragPercent = ESP.getHeapFragmentation();
+    
+    // Identificar el mayor consumidor sin usar String
+    const char* biggestConsumer = "SYSTEM";
+    uint32_t biggestSize = 0;
+    
+    if (fragPercent > 40) {
+        biggestConsumer = "FRAGMENTATION";
+        biggestSize = fragPercent;
+    } else if (measurementsEstimate > debugBufferEstimate && measurementsEstimate > 3000) {
+        biggestConsumer = "MEASUREMENTS";
+        biggestSize = measurementsEstimate;
+    } else if (debugBufferEstimate > 2000) {
+        biggestConsumer = "DEBUG_BUFFER";
+        biggestSize = debugBufferEstimate;
+    }
+    
+    Serial.print("[DIAG] Heap:");
+    Serial.print(heapStart);
+    Serial.print(" Meas:");
+    Serial.print(measurementsEstimate);
+    Serial.print(" Debug:");
+    Serial.print(debugBufferEstimate);
+    Serial.print(" Frag:");
+    Serial.print(fragPercent);
+    Serial.print("% Culprit:");
+    Serial.println(biggestConsumer);
+    
+    // Log compacto solo si hay suficiente heap
+    if (heapStart > HEAP_LOGGING_THRESHOLD) {
+        File f = LittleFS.open(HEALTH_LOG_FILE, "a");
+        if (f) {
+            f.print("{\"evt\":\"DIAG\",\"h\":");
+            f.print(heapStart);
+            f.print(",\"m\":");
+            f.print(measurementsEstimate);
+            f.print(",\"d\":");
+            f.print(debugBufferEstimate);
+            f.print(",\"f\":");
+            f.print(fragPercent);
+            f.print(",\"c\":\"");
+            f.print(biggestConsumer);
+            f.println("\"}");
+            f.close();
+        }
+    }
+}
+
+// ===== RCP: RESET DE COMPONENTE PROACTIVO (OPTIMIZADO) =====
+// Intenta liberar memoria limpiando el componente más problemático
+// Retorna true si logró liberar >2KB, false si necesita restart
+bool resetComponentProactive(const char* component) {
+    uint32_t heapBefore = ESP.getFreeHeap();
+    
+    // Limpiar según componente identificado
+    if (strcmp(component, "MEASUREMENTS") == 0 && jsonIndex > 10) {
+        // Purgar mediciones, mantener solo últimas 10
+        for (int i = 0; i < 10; i++) {
+            measurements[i] = measurements[jsonIndex - 10 + i];
+        }
+        jsonIndex = 10;
+        saveMeasurementFile(arrayToString(measurements, jsonIndex));
+    }
+    else if (strcmp(component, "DEBUG_BUFFER") == 0) {
+        // Limpiar debug buffer
+        for (int i = 0; i < DEBUG_LOG_SIZE; i++) {
+            debugLogBuffer[i] = "";
+        }
+        debugLogIndex = 0;
+        debugLogCount = 0;
+    }
+    else {
+        // SYSTEM o FRAGMENTATION: limpiar todo lo que se pueda
+        // Debug buffer
+        for (int i = 0; i < DEBUG_LOG_SIZE; i++) {
+            debugLogBuffer[i] = "";
+        }
+        debugLogIndex = 0;
+        debugLogCount = 0;
+        
+        // Mediciones (mantener solo 5)
+        if (jsonIndex > 5) {
+            for (int i = 0; i < 5; i++) {
+                measurements[i] = measurements[jsonIndex - 5 + i];
+            }
+            jsonIndex = 5;
+            saveMeasurementFile(arrayToString(measurements, jsonIndex));
+        }
+    }
+    
+    uint32_t heapAfter = ESP.getFreeHeap();
+    int32_t recovered = (int32_t)heapAfter - (int32_t)heapBefore;
+    
+    Serial.print("[RCP] ");
+    Serial.print(component);
+    Serial.print(" Before:");
+    Serial.print(heapBefore);
+    Serial.print(" After:");
+    Serial.print(heapAfter);
+    Serial.print(" +");
+    Serial.println(recovered);
+    
+    // Log solo si hay suficiente heap
+    if (heapAfter > HEAP_LOGGING_THRESHOLD) {
+        File f = LittleFS.open(HEALTH_LOG_FILE, "a");
+        if (f) {
+            f.print("{\"evt\":\"RCP\",\"c\":\"");
+            f.print(component);
+            f.print("\",\"b\":");
+            f.print(heapBefore);
+            f.print(",\"a\":");
+            f.print(heapAfter);
+            f.print(",\"r\":");
+            f.print(recovered);
+            f.println("}");
+            f.close();
+        }
+    }
+    
+    // Éxito si recuperamos >2KB o llegamos a nivel seguro
+    return (recovered > 2000 || heapAfter >= HEAP_WARNING_THRESHOLD);
+}
+
+// ===== ENDPOINT /healthLog?lines=N (tail) =====
+void handleHealthLog() {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    int lines = 100; // default tail size
+    if (server.hasArg("lines")) {
+        int req = server.arg("lines").toInt();
+        if (req > 0 && req <= 500) lines = req; // clamp to 500 max (heap safety)
+    }
+    if (!LittleFS.exists(HEALTH_LOG_FILE)) {
+        server.send(200, "application/json", "{\"lines\":[]}");
+        return;
+    }
+    File f = LittleFS.open(HEALTH_LOG_FILE, "r");
+    if (!f) {
+        // Corrupt file, remove and return empty
+        Serial.println("[HEALTH LOG] ERROR: cannot open log for read, removing!");
+        LittleFS.remove(HEALTH_LOG_FILE);
+        server.send(200, "application/json", "{\"lines\":[\"LOG_CLEANUP: health_log.txt removed (read fail)\"]}");
+        return;
+    }
+    // Allocate ring buffer on heap to avoid stack overflow
+    String* ring = new String[lines];
+    if (!ring) {
+        f.close();
+        server.send(500, "application/json", "{\"error\":\"out of memory\"}");
+        return;
+    }
+    int count = 0;
+    while (f.available()) {
+        String l = f.readStringUntil('\n');
+        l.trim();
+        if (!l.length() || l.length() > 512) continue;
+        // Validar que sea JSON (empieza y termina con llaves)
+        if (!(l.startsWith("{") && l.endsWith("}"))) {
+            Serial.println("[HEALTH LOG] WARN: línea corrupta, borrando log!");
+            f.close();
+            LittleFS.remove(HEALTH_LOG_FILE);
+            delete[] ring;
+            server.send(200, "application/json", "{\"lines\":[\"LOG_CLEANUP: health_log.txt removed (bad format)\"]}");
+            return;
+        }
+        if (count < lines) {
+            ring[count++] = l;
+        } else {
+            // Circular shift to keep last N lines
+            for (int i=1;i<lines;i++) ring[i-1]=ring[i];
+            ring[lines-1]=l;
+        }
+        if ((count % 50)==0) ESP.wdtFeed();
+    }
+    f.close();
+    // If all lines are empty, treat as corrupt and auto-cleanup
+    bool allEmpty = true;
+    for (int i=0;i<count;i++) {
+        if (ring[i].length() > 0) { allEmpty = false; break; }
+    }
+    if (allEmpty && count > 0) {
+        Serial.println("[HEALTH LOG] WARN: all log lines empty, removing log!");
+        LittleFS.remove(HEALTH_LOG_FILE);
+        delete[] ring;
+        server.send(200, "application/json", "{\"lines\":[\"LOG_CLEANUP: health_log.txt removed (all lines empty)\"]}");
+        return;
+    }
+    String resp = "{\"lines\":[";
+    for (int i=0;i<count;i++) {
+        if (i) resp += ",";
+        String esc = ring[i];
+        esc.replace("\\", "\\\\");
+        esc.replace("\"", "\\\"");
+        resp += "\"" + esc + "\"";
+    }
+    resp += "]}";
+    delete[] ring; // Free heap memory
+    server.send(200, "application/json", resp);
+}
+
+// ===== ENDPOINT /downloadLogs - aggregated logs (health + prev + debug circular) =====
+void handleDownloadLogs() {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.sendHeader("Cache-Control", "no-cache");
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "text/plain", "");
+    server.sendContent("GreenNanny Logs Export\n");
+    server.sendContent("Generated: ");
+    server.sendContent(String(millis()).c_str());
+    server.sendContent(" ms since boot\n\n");
+    // Current debug circular buffer
+    server.sendContent("=== DEBUG RING (most recent first) ===\n");
+    if (debugLogCount==0) server.sendContent("<empty>\n");
+    else {
+        int startIdx = (debugLogCount < DEBUG_LOG_SIZE) ? 0 : debugLogIndex;
+        for (int i=0;i<debugLogCount;i++) {
+            int idx = (startIdx + i) % DEBUG_LOG_SIZE;
+            server.sendContent(debugLogBuffer[idx] + "\n");
+            if ((i % 20)==0) yield();
+        }
+    }
+    // Health logs
+    auto streamFile = [&](const char* path, const char* title){
+        if (!LittleFS.exists(path)) return;
+        File f = LittleFS.open(path, "r");
+        if (!f) {
+            Serial.printf("[DOWNLOAD LOGS] ERROR: cannot open %s, removing!\n", path);
+            LittleFS.remove(path);
+            server.sendContent(String("\n=== ") + title + " ===\nLOG_CLEANUP: file removed (open fail)\n");
+            return;
+        }
+        server.sendContent(String("\n=== ") + title + " ===\n");
+        int lineCount = 0;
+        while (f.available()) {
+            String chunk = f.readStringUntil('\n');
+            server.sendContent(chunk + "\n");
+            if ((millis() & 0xF)==0) yield();
+            lineCount++;
+        }
+        f.close();
+        if (lineCount == 0) {
+            Serial.printf("[DOWNLOAD LOGS] WARN: %s empty, removing!\n", path);
+            LittleFS.remove(path);
+            server.sendContent("LOG_CLEANUP: file removed (empty)\n");
+        }
+    };
+    streamFile(HEALTH_LOG_PREV_FILE, "HEALTH LOG (previous rotated)");
+    streamFile(HEALTH_LOG_FILE, "HEALTH LOG (current)");
+    // Measurements count summary only (full history already accessible separately)
+    server.sendContent("\n=== SUMMARY ===\nMeasurements in RAM: ");
+    server.sendContent(String(jsonIndex).c_str());
+    server.sendContent("\nHealth Log Events Skipped: ");
+    server.sendContent(String(healthLogSkipCount).c_str());
+    server.sendContent("\nFree Heap: ");
+    server.sendContent(String(ESP.getFreeHeap()).c_str());
+    server.sendContent("\nHeap Fragmentation: ");
+    server.sendContent(String(ESP.getHeapFragmentation()).c_str());
+    server.sendContent("%\nReset Reason: ");
+    server.sendContent(ESP.getResetReason().c_str());
+    if (LittleFS.exists(LAST_RESTART_FILE)) {
+        File rf = LittleFS.open(LAST_RESTART_FILE, "r");
+        if (rf) {
+            String rr = rf.readStringUntil('\n'); rr.trim(); rf.close();
+            server.sendContent("\nLast Restart Reason (persisted): ");
+            server.sendContent(rr.c_str());
+        }
+    }
+    server.sendContent("\n-- END --\n");
+    server.client().stop();
+}
+
+// ===== ENDPOINT /diskInfo - INFORMACIÓN DEL FILESYSTEM =====
+void handleDiskInfo() {
+    Serial.println("[HTTP] Solicitud /diskInfo recibida.");
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    
+    FSInfo fs_info;
+    if (!LittleFS.info(fs_info)) {
+        Serial.println("[ERROR] No se pudo obtener información del filesystem.");
+        server.send(500, "application/json", "{\"error\":\"Failed to get filesystem info\"}");
+        return;
+    }
+    
+    StaticJsonDocument<256> doc;
+    
+    uint32_t totalBytes = fs_info.totalBytes;
+    uint32_t usedBytes = fs_info.usedBytes;
+    uint32_t freeBytes = totalBytes - usedBytes;
+    float usedPercent = (totalBytes > 0) ? (usedBytes * 100.0 / totalBytes) : 0;
+    float freePercent = 100.0 - usedPercent;
+    
+    doc["total_bytes"] = totalBytes;
+    doc["used_bytes"] = usedBytes;
+    doc["free_bytes"] = freeBytes;
+    doc["used_percent"] = serialized(String(usedPercent, 1));
+    doc["free_percent"] = serialized(String(freePercent, 1));
+    doc["block_size"] = fs_info.blockSize;
+    doc["page_size"] = fs_info.pageSize;
+    doc["max_open_files"] = fs_info.maxOpenFiles;
+    doc["max_path_length"] = fs_info.maxPathLength;
+    
+    String response;
+    response.reserve(256); // Pre-allocar para JSON pequeño
+    serializeJson(doc, response);
+    
+    server.send(200, "application/json", response);
+    
+    // OPTIMIZACIÓN CRÍTICA: Liberar buffers HTTP inmediatamente
+    server.client().flush();
+    yield();
 }
 
 // Función para agregar mensajes al buffer de debug
@@ -1141,9 +2002,10 @@ void loadWifiCredentials() {
     auto tryConnect = [&](const String& s, const String& p, const char* label) -> bool {
         if (s.length() == 0) return false;
         Serial.print("[ACCION] Intentando conectar (" ); Serial.print(label); Serial.print(") a '"); Serial.print(s); Serial.println("'");
-        actualHostname = String(HOSTNAME) + "-" + String(ESP.getChipId() & 0xFFF, HEX);
+        // Generate hostname locally (no global storage)
+        String localHostname = String(HOSTNAME) + "-" + String(ESP.getChipId() & 0xFFF, HEX);
         WiFi.mode(WIFI_STA);
-        WiFi.hostname(actualHostname);
+        WiFi.hostname(localHostname);
         WiFi.begin(s.c_str(), p.c_str());
         int attempts = 0;
         while (WiFi.status() != WL_CONNECTED && attempts < 30) { // ~15s
@@ -1276,6 +2138,7 @@ int parseData(String input, String output[]) {
     int startIndex = 0;
     int endIndex = 0;
     input.trim(); // Quitar espacios al inicio/fin
+    
     while (startIndex < input.length() && count < MAX_JSON_OBJECTS) {
         startIndex = input.indexOf('{', startIndex);
         if (startIndex == -1) break; // No más objetos JSON
@@ -1284,22 +2147,39 @@ int parseData(String input, String output[]) {
             Serial.println("[PARSE WARN] Objeto JSON incompleto encontrado. Deteniendo parseo.");
             break; // Malformed JSON object
         }
+        
         // Extraer el objeto JSON
-        output[count++] = input.substring(startIndex, endIndex + 1);
+        String jsonObj = input.substring(startIndex, endIndex + 1);
+        
+        // Validación: debe tener contenido y al menos un campo con comillas
+        if (jsonObj.length() > 5 && jsonObj.indexOf("\"") > 0) {
+            output[count++] = jsonObj;
+        } else {
+            Serial.print("[PARSE WARN] Saltando objeto JSON vacío/inválido: '");
+            Serial.print(jsonObj.substring(0, 30));
+            Serial.println("...'");
+        }
+        
         // Mover al siguiente carácter después del '}'
         startIndex = endIndex + 1;
+        
         // Omitir la coma y espacios opcionales antes del siguiente objeto
-        if (startIndex < input.length() && input.charAt(startIndex) == ',') {
-             startIndex++;
+        while(startIndex < input.length() && 
+              (input.charAt(startIndex) == ',' || isspace(input.charAt(startIndex)))) {
+            startIndex++;
         }
-        while(startIndex < input.length() && isspace(input.charAt(startIndex))) {
-             startIndex++; // Skip whitespace
-        }
+        
         if ((count % 20) == 0) { yield(); }
     }
+    
     if (count >= MAX_JSON_OBJECTS) {
        Serial.println("[PARSE WARN] Se alcanzó el límite MAX_JSON_OBJECTS durante el parseo.");
     }
+    
+    Serial.print("[PARSE INFO] Parseados ");
+    Serial.print(count);
+    Serial.println(" objetos JSON válidos.");
+    
     return count;
 }
 
@@ -1307,32 +2187,58 @@ int parseData(String input, String output[]) {
 String arrayToString(String array[], size_t arraySize) {
     String result = "";
     bool first = true;
+    int validCount = 0;
+    
     for (size_t i = 0; i < arraySize; i++) {
-        // Asegurarse que el string no es nulo y tiene contenido JSON válido básico
-        if (array[i] != nullptr && array[i].length() > 2 && array[i].startsWith("{") && array[i].endsWith("}")) {
+        // Validación estricta: verificar que tiene contenido JSON válido
+        if (array[i].length() > 5 && 
+            array[i].startsWith("{") && 
+            array[i].endsWith("}") &&
+            array[i].indexOf("\"") > 0) {
+            
             if (!first) {
                 result += ","; // Añadir coma separadora
             }
             result += array[i];
             first = false;
-        } else if (array[i] != nullptr && array[i].length() > 0) {
+            validCount++;
+        } else if (array[i].length() > 0) {
             // Loguear si hay un elemento inválido en el array que no sea vacío
-            Serial.print("[ARRAY2STR WARN] Ignorando elemento inválido en índice "); Serial.print(i); Serial.print(": "); Serial.println(array[i]);
+            Serial.print("[ARRAY2STR WARN] Ignorando elemento inválido en índice ");
+            Serial.print(i);
+            Serial.print(": '");
+            Serial.print(array[i].substring(0, 30));
+            Serial.println("...'");
         }
         if ((i % 20) == 0) { yield(); }
     }
+    
+    if (validCount != arraySize && arraySize > 0) {
+        Serial.print("[ARRAY2STR INFO] Convertidos ");
+        Serial.print(validCount);
+        Serial.print(" de ");
+        Serial.print(arraySize);
+        Serial.println(" elementos válidos");
+    }
+    
     return result;
 }
 
 // Guarda una nueva medición en array y archivo (con deslizamiento)
 void saveMeasurement(const String& jsonString) {
-    Serial.println("[ACCION] Guardando nueva medición:");
-    Serial.println(jsonString);
-    // Validación básica del formato JSON
-    if (!jsonString.startsWith("{") || !jsonString.endsWith("}")) {
-        Serial.println("[ERROR] Intento guardar medición inválida (no es un objeto JSON).");
+    // Validación estricta del formato JSON
+    if (jsonString.length() < 5 || 
+        !jsonString.startsWith("{") || 
+        !jsonString.endsWith("}") ||
+        jsonString.indexOf("\"") < 0) { // Debe contener al menos un campo
+        Serial.print("[ERROR] Intento guardar medición inválida: '");
+        Serial.print(jsonString.substring(0, 50));
+        Serial.println("...'");
         return;
     }
+    
+    Serial.println("[ACCION] Guardando nueva medición:");
+    Serial.println(jsonString);
 
     if (jsonIndex < MAX_JSON_OBJECTS) {
         measurements[jsonIndex++] = jsonString;
@@ -1389,18 +2295,39 @@ void appendMeasurementToFile(const String& jsonString) {
 void formatMeasurementsToString(String& formattedString) {
     formattedString = "["; // Iniciar array JSON
     bool first = true;
+    int validCount = 0;
     for (int i = 0; i < jsonIndex; i++) {
-         // Asegurarse que el string no es nulo y tiene contenido JSON válido básico
-        if (measurements[i] != nullptr && measurements[i].length() > 2 && measurements[i].startsWith("{") && measurements[i].endsWith("}")) {
+         // Validación estricta: verificar que no esté vacío, tenga llaves, y contenga al menos un campo
+        if (measurements[i].length() > 5 && 
+            measurements[i].startsWith("{") && 
+            measurements[i].endsWith("}") &&
+            measurements[i].indexOf("\"") > 0) { // Debe tener al menos un campo con comillas
+            
             if (!first) {
                 formattedString += ","; // Coma separadora
             }
             formattedString += measurements[i]; // Añadir el objeto JSON
             first = false;
+            validCount++;
+        } else if (measurements[i].length() > 0) {
+            // Log de elementos inválidos para debugging
+            Serial.print("[FORMAT WARN] Saltando medición inválida idx=");
+            Serial.print(i);
+            Serial.print(": '");
+            Serial.print(measurements[i].substring(0, 30));
+            Serial.println("...'");
         }
         if ((i % 20) == 0) { yield(); }
     }
     formattedString += "]"; // Cerrar array JSON
+    
+    if (validCount != jsonIndex && jsonIndex > 0) {
+        Serial.print("[FORMAT INFO] Formateadas ");
+        Serial.print(validCount);
+        Serial.print(" de ");
+        Serial.print(jsonIndex);
+        Serial.println(" mediciones (algunas se saltaron por ser inválidas)");
+    }
 }
 
 // Registra un evento en el historial (activación de ventilador/extractor, etc.)
@@ -1553,9 +2480,10 @@ void controlIndependiente() {
     static uint32_t failureStartTimeEpoch = 0; // Usará epoch=0 si NTP no ha sincronizado
     static bool previousSensorValid = true;
 
-    // 2. Leer sensores
-    float humidity    = getHumidity();
-    float temperature = getTemperature();
+    // 2. Leer sensores - ACTUALIZAR CACHE desde el sensor físico
+    Serial.println("[SENSOR] Leyendo DHT (actualización programada)...");
+    float humidity    = updateHumidityCache();    // Lee físicamente y actualiza cache
+    float temperature = updateTemperatureCache(); // Lee físicamente y actualiza cache
 
     // Actualizar timestamp de última medición SOLO si la hora es válida
     if (timeValid) {
@@ -1697,9 +2625,24 @@ void handleData() {
     server.sendHeader("Pragma", "no-cache");
     server.sendHeader("Expires", "-1");
 
-    // Obtener datos actuales
-    float humidity = getHumidity();
-    float temperature = getTemperature();
+    // OPTIMIZACIÓN: Usar solo valores en caché, NO leer del sensor directamente
+    // El sensor solo se lee en controlIndependiente() o /takeMeasurement
+    float humidity, temperature;
+    
+    if (testModeEnabled) {
+        // Usar valores simulados en modo test
+        humidity = simulatedHumidity;
+        temperature = simulatedTemperature;
+    } else if (simulateSensors) {
+        // Usar valores simulados si la simulación está activa
+        humidity = simulatedHumidity;
+        temperature = simulatedTemperature;
+    } else {
+        // Usar valores en caché - NO leer del sensor aquí para conservar heap y evitar bloqueos
+        humidity = getHumidity();
+        temperature = getTemperature();
+    }
+    
     float vpd = calculateVPD(temperature, humidity);
 
     // Obtener hora y calcular tiempo transcurrido (NTP based)
@@ -1719,8 +2662,8 @@ void handleData() {
     int stageIndex = getCurrentStageIndex(elapsedDays);
     const Stage& currentStage = stages[stageIndex]; // Usar datos de etapa actuales
 
-    // Crear JSON de respuesta
-    StaticJsonDocument<768> doc; // Aumentar tamaño si es necesario
+    // Crear JSON de respuesta - reducido de 768 a 512 bytes (suficiente para campos actuales)
+    StaticJsonDocument<512> doc;
 
     // Sensores
     if (temperature > -90.0) doc["temperature"] = serialized(String(temperature, 1)); else doc["temperature"] = nullptr;
@@ -1780,15 +2723,20 @@ void handleData() {
         doc["wifiRSSI"] = 0;
         doc["wifiStatus"] = "Disconnected";
     }
-    doc["deviceHostname"] = (mdnsAdvertisedName.length() ? mdnsAdvertisedName : String(HOSTNAME));
-    doc["mdnsName"] = String((const char*)doc["deviceHostname"]) + ".local";
+    doc["deviceHostname"] = HOSTNAME; // Use const directly
+    doc["mdnsName"] = String(HOSTNAME) + ".local";
     doc["freeHeap"] = ESP.getFreeHeap();
     doc["measurementInterval"] = measurementInterval; // Informar intervalo configurado
 
-    // Serializar y enviar
+    // Serializar y enviar - OPTIMIZACIÓN: reserve() para evitar reallocaciones múltiples
     String response;
+    response.reserve(512); // Pre-allocar espacio estimado para evitar fragmentación
     serializeJson(doc, response);
     server.send(200, "application/json", response);
+    
+    // OPTIMIZACIÓN CRÍTICA: Liberar buffers HTTP inmediatamente
+    server.client().flush(); // Enviar todo lo pendiente
+    yield(); // Permitir que WiFi stack procese
 }
 
 // Handler para /wifiList - Listar redes WiFi
@@ -1812,13 +2760,13 @@ void handleWifiListRequest() {
          return;
     }
 
-    // Estimar tamaño JSON: ~70 bytes por red + overhead
-    // Usar DynamicJsonDocument para tamaño variable
-    DynamicJsonDocument wifiJson(numNetworks * 80 + 50); // Ajustar tamaño si es necesario
+    // OPTIMIZACIÓN: Limitar a 10 redes máximo para reducir uso de heap
+    int maxNetworksToSend = (numNetworks > 10) ? 10 : numNetworks;
+    
+    // Usar DynamicJsonDocument con tamaño limitado (10 redes * 80 bytes = 800 + overhead)
+    DynamicJsonDocument wifiJson(maxNetworksToSend * 80 + 50);
     JsonArray networks = wifiJson.to<JsonArray>();
 
-    // Limitar el número de redes enviadas para no sobrecargar JSON/memoria
-    int maxNetworksToSend = (numNetworks > 20) ? 20 : numNetworks;
     Serial.print("[INFO] Enviando información de las (hasta) "); Serial.print(maxNetworksToSend); Serial.println(" redes más fuertes.");
 
     for (int i = 0; i < maxNetworksToSend; ++i) {
@@ -1882,8 +2830,9 @@ void handleConnectWifi() {
         WiFi.mode(WIFI_STA);
         delay(100); // Pequeña pausa para que el modo cambie
     }
-    actualHostname = String(HOSTNAME) + "-" + String(ESP.getChipId() & 0xFFF, HEX);
-    WiFi.hostname(actualHostname);
+    // Generate hostname locally (no global storage)
+    String localHostname = String(HOSTNAME) + "-" + String(ESP.getChipId() & 0xFFF, HEX);
+    WiFi.hostname(localHostname);
     WiFi.begin(ssid.c_str(), password.c_str());
 
     // Esperar conexión (máximo ~15 segundos)
@@ -1933,9 +2882,9 @@ void sendFinalInstructionsPage(ESP8266WebServer& server) {
     server.send(200, "text/html", ""); // Envío inicial vacío
 
     // Envío del contenido HTML exacto que solicitaste, con la sintaxis corregida.
-    String preferred = mdnsAdvertisedName.length()? mdnsAdvertisedName : String(HOSTNAME);
-    String urlLocal = String("http://") + preferred + ".local";
-    String urlNbns  = String("http://") + preferred + "/";
+    // Use HOSTNAME directly (mdnsAdvertisedName was removed to save RAM)
+    String urlLocal = String("http://") + HOSTNAME + ".local";
+    String urlNbns  = String("http://") + HOSTNAME + "/";
     String html = "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
         "<title>Conectando... - Green Nanny</title>"
         "<link href=\"https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css\" rel=\"stylesheet\">"
@@ -1980,12 +2929,45 @@ void handleSaveWifiCredentials() {
 // Handler para /loadMeasurement - Cargar historial
 void handleLoadMeasurement() {
     Serial.println("[HTTP] Solicitud /loadMeasurement (GET).");
+    
+    // OPTIMIZACIÓN CRÍTICA: Stream directo sin construir String gigante
+    // Esto ahorra ~15KB de heap en sistemas con muchas mediciones
     server.sendHeader("Access-Control-Allow-Origin", "*");
     server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    String formattedJsonArray;
-    // Usa la función que formatea el array en memoria a un string JSON "[{},{},...]"
-    formatMeasurementsToString(formattedJsonArray);
-    server.send(200, "application/json", formattedJsonArray);
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "application/json", "");
+    
+    // Enviar array JSON por partes directamente al cliente
+    server.sendContent("[");
+    bool first = true;
+    int validCount = 0;
+    
+    for (int i = 0; i < jsonIndex; i++) {
+        // Validación estricta: verificar que no esté vacío, tenga llaves, y contenga al menos un campo
+        if (measurements[i].length() > 5 && 
+            measurements[i].startsWith("{") && 
+            measurements[i].endsWith("}") &&
+            measurements[i].indexOf("\"") > 0) {
+            
+            if (!first) {
+                server.sendContent(",");
+            }
+            server.sendContent(measurements[i]);
+            first = false;
+            validCount++;
+        }
+        if ((i % 10) == 0) { yield(); } // Yield cada 10 items
+    }
+    
+    server.sendContent("]");
+    // Finalizar el envío correctamente: enviar chunk vacío para terminar la codificación chunked
+    server.sendContent("");
+    // Cerrar la conexión del cliente de forma ordenada
+    server.client().stop(); // Cerrar conexión
+    
+    Serial.print("[HTTP] /loadMeasurement enviado (stream): ");
+    Serial.print(validCount);
+    Serial.println(" mediciones");
 }
 
 // Handler para /clearHistory - Borrar historial
@@ -2453,6 +3435,18 @@ void sendDiscordAlert(const String& title, const String& message, const String& 
     addDebugLog("=== DISCORD START ===");
     addDebugLog("Title: " + title.substring(0, 25));
     
+    // ===== VERIFICAR HEAP ANTES DE SSL =====
+    uint32_t freeHeap = ESP.getFreeHeap();
+    addDebugLog("Heap: " + String(freeHeap) + " bytes");
+    
+    // AUMENTADO: WiFiClientSecure necesita ~10-14KB overhead, reservar margen adicional
+    if (freeHeap < 18000) {
+        addDebugLog("[ERR] HEAP BAJO! <18KB");
+        Serial.println("[DISCORD] ALERTA: Heap bajo (" + String(freeHeap) + " bytes). Saltando envío para evitar crash.");
+        discordProcessing = false;
+        return;
+    }
+    
     // Parse URL
     String host, path;
     int port = 443;
@@ -2479,7 +3473,7 @@ void sendDiscordAlert(const String& title, const String& message, const String& 
     // Connect
     WiFiClientSecure client;
     client.setInsecure();
-    client.setTimeout(15000);
+    client.setTimeout(8000); // Reducido de 15s a 8s
     
     addDebugLog("Connecting...");
     if (!client.connect(host.c_str(), port)) {
@@ -2490,6 +3484,7 @@ void sendDiscordAlert(const String& title, const String& message, const String& 
     }
     
     addDebugLog("Connected!");
+    ESP.wdtFeed(); // Feed watchdog después de conectar
     
     // Build JSON
     StaticJsonDocument<512> doc;
@@ -2519,17 +3514,18 @@ void sendDiscordAlert(const String& title, const String& message, const String& 
     
     addDebugLog("Sent, waiting...");
     
-    // Wait for response
+    // Wait for response (timeout reducido a 8s)
     unsigned long timeout = millis();
     while (!client.available()) {
-        if (millis() - timeout > 15000) {
-            addDebugLog("[ERR] Timeout");
+        if (millis() - timeout > 8000) {  // Reducido de 15s a 8s
+            addDebugLog("[ERR] Timeout 8s");
             client.stop();
             discordProcessing = false;
             return;
         }
         delay(50);
         yield();
+        ESP.wdtFeed(); // Feed watchdog durante espera
     }
     
     // Read status line only
@@ -2594,6 +3590,17 @@ void sendDiscordAlertTest(const String& title, const String& message, const Stri
     addDebugLog("=== TEST ALERT START ===");
     addDebugLog("Title: " + title.substring(0, 25));
     
+    // ===== VERIFICAR HEAP ANTES DE SSL =====
+    uint32_t freeHeap = ESP.getFreeHeap();
+    addDebugLog("Heap: " + String(freeHeap) + " bytes");
+    
+    if (freeHeap < 15000) {  // SSL necesita ~8-12KB mínimo
+        addDebugLog("[ERR] HEAP BAJO! <15KB");
+        Serial.println("[DISCORD TEST] ALERTA: Heap bajo (" + String(freeHeap) + " bytes). Saltando test para evitar crash.");
+        discordProcessing = false;
+        return;
+    }
+    
     // Parse URL
     String host, path;
     int port = 443;
@@ -2620,7 +3627,7 @@ void sendDiscordAlertTest(const String& title, const String& message, const Stri
     // Connect
     WiFiClientSecure client;
     client.setInsecure();
-    client.setTimeout(15000);
+    client.setTimeout(8000); // Reducido de 15s a 8s
     
     addDebugLog("Connecting...");
     if (!client.connect(host.c_str(), port)) {
@@ -2631,6 +3638,7 @@ void sendDiscordAlertTest(const String& title, const String& message, const Stri
     }
     
     addDebugLog("Connected!");
+    ESP.wdtFeed(); // Feed watchdog después de conectar
     
     // Build JSON
     StaticJsonDocument<512> doc;
@@ -2660,17 +3668,18 @@ void sendDiscordAlertTest(const String& title, const String& message, const Stri
     
     addDebugLog("Sent, waiting...");
     
-    // Wait for response
+    // Wait for response (timeout reducido a 8s)
     unsigned long timeout = millis();
     while (!client.available()) {
-        if (millis() - timeout > 15000) {
-            addDebugLog("[ERR] Timeout");
+        if (millis() - timeout > 8000) {  // Reducido de 15s a 8s
+            addDebugLog("[ERR] Timeout 8s");
             client.stop();
             discordProcessing = false;
             return;
         }
         delay(50);
         yield();
+        ESP.wdtFeed(); // Feed watchdog durante espera
     }
     
     // Read status line only
@@ -3120,12 +4129,16 @@ void startAPMode() {
 // OTA (Over-The-Air) UPDATE CONFIGURATION
 // ============================================
 
+#ifndef DISABLE_OTA
 void setupOTA() {
     Serial.println("[SETUP] Configurando OTA updates...");
     
+    // Generate hostname locally since actualHostname was removed
+    String localHostname = String(HOSTNAME) + "-" + String(ESP.getChipId() & 0xFFF, HEX);
+    
     // ArduinoOTA setup
     ArduinoOTA.setPort(8266);
-    ArduinoOTA.setHostname(actualHostname.c_str());
+    ArduinoOTA.setHostname(localHostname.c_str());
     ArduinoOTA.setPassword(OTA_PASSWORD);
     
     ArduinoOTA.onStart([]() {
@@ -3172,6 +4185,12 @@ void setupOTA() {
     Serial.println("[OTA] HTTP Update Server configurado en /update");
     Serial.println("[OTA] Usuario: admin | Contraseña: " + String(OTA_PASSWORD));
 }
+#else
+void setupOTA() {
+    Serial.println("[OTA] DESHABILITADO - Compilado sin soporte OTA (ahorra ~2-3KB RAM)");
+    Serial.println("[OTA] Para actualizar firmware, usar USB solamente");
+}
+#endif
 
 // Configura servidor web y endpoints
 void setupServer() {
@@ -3200,6 +4219,16 @@ void setupServer() {
     server.on("/setDiscordConfig", HTTP_POST, handleSetDiscordConfig);   // Configurar Discord webhook
     server.on("/testDiscordAlert", HTTP_POST, handleTestDiscordAlert);   // Enviar alerta de prueba a Discord
     server.on("/getLogs", HTTP_GET, handleGetLogs);                      // Obtener logs de debug
+    server.on("/health", HTTP_GET, handleHealth);                        // Health check endpoint
+    server.on("/diskInfo", HTTP_GET, handleDiskInfo);                    // Información del filesystem
+    server.on("/healthLog", HTTP_GET, handleHealthLog);                  // Tail health log (NEW)
+    server.on("/downloadLogs", HTTP_GET, handleDownloadLogs);            // Download aggregated logs (NEW)
+    server.on("/heapDiagnose", HTTP_GET, [](){                           // Diagnóstico manual de heap (NEW)
+        Serial.println("[HTTP] Solicitud /heapDiagnose (GET).");
+        server.sendHeader("Access-Control-Allow-Origin", "*");
+        diagnoseHeapUsage();
+        server.send(200, "application/json", "{\"status\":\"success\", \"message\":\"Heap diagnosis executed, check serial and health log.\"}");
+    });
     server.on("/setManualStage", HTTP_POST, handleSetManualStage);       // Activar control manual de etapa
     server.on("/resetManualStage", HTTP_POST, handleResetManualStage);   // Desactivar control manual
     server.on("/updateStage", HTTP_POST, handleUpdateStage);             // Modificar parámetros de una etapa
@@ -3222,8 +4251,8 @@ void setupServer() {
         // Enviar respuesta ANTES de reiniciar
         server.send(200, "application/json", "{\"status\":\"restarting\", \"message\":\"Device is restarting...\"}");
         Serial.println("[ACCION] Reiniciando sistema por petición HTTP...");
-        delay(1000); // Dar tiempo a enviar la respuesta
-        ESP.restart();
+        delay(300); // Dar tiempo a enviar la respuesta
+        scheduleRestart("MANUAL_RESTART");
     });
 
     // --- Servir Archivos Estáticos (onNotFound con Gzip y Cache) ---
