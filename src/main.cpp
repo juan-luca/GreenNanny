@@ -37,7 +37,10 @@ const int  daylightOffset_sec = 0;         // nada de DST
 #define FAN_PIN D4          // Pin para ventilador
 #define EXTRACTOR_PIN D5    // Pin para turbina de extracción
 
-#define MAX_JSON_OBJECTS 30 // Reducido a 30 para liberar más RAM (~2.4KB total, ~1.2KB extra vs 50). Con mediciones cada 3h, 30 = 90 horas de historial
+// File size limit for history (approx 200-250 records @ ~200 bytes each)
+#define MAX_HISTORY_FILE_SIZE 50000 
+#define KEEP_HISTORY_FILE_SIZE 25000 // Amount to keep after rotation
+
 #define STAGES_CONFIG_FILE "/stages_config.json" // File for custom stage config
 #define THRESHOLDS_CONFIG_FILE "/thresholds_config.json" // File for fan/extractor thresholds
 #define DISCORD_CONFIG_FILE "/discord_config.json" // File for Discord webhook configuration
@@ -81,9 +84,9 @@ static const char* HEALTH_LOG_PREV_FILE = "/health_log.prev";
 static const char* LAST_RESTART_FILE = "/last_restart_reason.txt";
 static const size_t HEALTH_LOG_MAX_BYTES = 64 * 1024; // 64KB rotation threshold
 
-// Almacenamiento de mediciones
-String measurements[MAX_JSON_OBJECTS];
-int jsonIndex = 0;
+// Almacenamiento de mediciones - FILE BASED ONLY
+// String measurements[MAX_JSON_OBJECTS]; // REMOVED
+int measurementCount = 0; // Counter for stats only
 
 // Configuración de red estática (opcional)
 /*IPAddress ip(192, 168, 0, 73);
@@ -502,6 +505,27 @@ void setup() {
             f.close();
           }
         #endif
+
+        // --- SANITY CHECK: Validate Measurements.txt ---
+        // Fix for "Unexpected token 'H', "[Humidity: "..." error
+        if (LittleFS.exists("/Measurements.txt")) {
+            File f = LittleFS.open("/Measurements.txt", "r");
+            if (f && f.size() > 0) {
+                char firstChar = f.read();
+                // If file doesn't start with JSON object start '{', it's likely corrupt (e.g. starts with "Humidity:")
+                if (firstChar != '{') {
+                    f.close();
+                    Serial.print("[WARN] Measurements.txt corrupt (starts with '");
+                    Serial.print(firstChar);
+                    Serial.println("'). Deleting to prevent parse errors...");
+                    LittleFS.remove("/Measurements.txt");
+                } else {
+                    f.close();
+                }
+            } else if (f) {
+                f.close();
+            }
+        }
     }
     
     Serial.println("[INFO] Hora inicial del sistema depende de NTP. Sincronizando...");
@@ -528,17 +552,16 @@ void setup() {
     // ***** Load Discord webhook configuration *****
     loadDiscordConfig();
 
-    // Cargar mediciones previas
-    {
-        String raw = loadMeasurements();
-        jsonIndex = parseData(raw, measurements);
-        Serial.print("[INFO] Cargadas "); Serial.print(jsonIndex); Serial.println(" mediciones previas.");
-        // Reparación automática si el contenido del archivo parece corrupto/truncado
-        String cleaned = arrayToString(measurements, jsonIndex);
-        if (cleaned.length() > 0 && cleaned.length() != raw.length()) {
-            Serial.println("[REPAIR] Detectada posible corrupción/truncado en historial. Reescribiendo archivo limpio...");
-            saveMeasurementFile(cleaned);
+    // Contar mediciones previas (sin cargar a RAM)
+    if (LittleFS.exists("/Measurements.txt")) {
+        File f = LittleFS.open("/Measurements.txt", "r");
+        if (f) {
+            while (f.available()) {
+                if (f.read() == '{') measurementCount++;
+            }
+            f.close();
         }
+        Serial.print("[INFO] Contadas "); Serial.print(measurementCount); Serial.println(" mediciones en archivo.");
     }
 
     // Cargar intervalo de medición
@@ -635,7 +658,8 @@ void loop() {
                 Serial.println("[HEAP] Primera y única oportunidad de RCP en este boot.");
                 
                 // Determinar qué componente limpiar
-                uint32_t measEstimate = jsonIndex * 150;
+                uint32_t measEstimate = 0; // File based
+
                 uint32_t debugEstimate = DEBUG_LOG_SIZE * 80;
                 uint8_t frag = ESP.getHeapFragmentation();
                 
@@ -680,22 +704,10 @@ void loop() {
         // NIVEL WARNING: <14KB - Limpieza preventiva suave
         else if (freeHeap < HEAP_WARNING_THRESHOLD) {
             // NO resetear rcpAttempted aquí, solo advertir
-            if (jsonIndex > 100) {
-                Serial.print("[HEAP WARNING] ");
-                Serial.print(freeHeap);
-                Serial.print(" bytes libres, purgando mediciones antiguas (total: ");
-                Serial.print(jsonIndex);
-                Serial.println(")...");
-                
-                int toRemove = min(50, jsonIndex - 80);  // Mantener al menos 80
-                for (int i = toRemove; i < jsonIndex; i++) {
-                    measurements[i - toRemove] = measurements[i];
-                }
-                jsonIndex -= toRemove;
-                saveMeasurementFile(arrayToString(measurements, jsonIndex));
-                Serial.print("[HEAP] Mediciones reducidas a ");
-                Serial.println(jsonIndex);
-            }
+            // Measurements are file-based, no need to purge from RAM
+            Serial.print("[HEAP WARNING] ");
+            Serial.print(freeHeap);
+            Serial.println(" bytes libres.");
         }
         // Heap está bien, no hacer nada (NO resetear rcpAttempted - permanece true hasta próximo boot)
         
@@ -1172,7 +1184,7 @@ void handleHealth() {
     }
     
     // Contadores
-    doc["measurements_count"] = jsonIndex;
+    doc["measurements_count"] = measurementCount;
     doc["logs_count"] = debugLogCount;
     doc["discord_processing"] = discordProcessing;
     doc["ntp_synced"] = ntpTimeSynchronized;
@@ -1258,7 +1270,7 @@ void appendHealthLog(const char* eventType) {
         usedBytes = fs_info.usedBytes;
         totalBytes = fs_info.totalBytes;
     }
-    uint32_t measCount = jsonIndex;
+    uint32_t measCount = measurementCount;
 
     // Rotate if oversized, with error handling
     bool rotated = false;
@@ -1367,7 +1379,8 @@ void scheduleRestart(const char* reason) {
 void diagnoseHeapUsage() {
     // Diagnóstico simplificado para minimizar consumo de heap
     uint32_t heapStart = ESP.getFreeHeap();
-    uint32_t measurementsEstimate = jsonIndex * 150;
+    // Measurements are now on file, so estimate is 0 for RAM
+    uint32_t measurementsEstimate = 0; 
     uint32_t debugBufferEstimate = DEBUG_LOG_SIZE * 80;
     uint8_t fragPercent = ESP.getHeapFragmentation();
     
@@ -1378,9 +1391,6 @@ void diagnoseHeapUsage() {
     if (fragPercent > 40) {
         biggestConsumer = "FRAGMENTATION";
         biggestSize = fragPercent;
-    } else if (measurementsEstimate > debugBufferEstimate && measurementsEstimate > 3000) {
-        biggestConsumer = "MEASUREMENTS";
-        biggestSize = measurementsEstimate;
     } else if (debugBufferEstimate > 2000) {
         biggestConsumer = "DEBUG_BUFFER";
         biggestSize = debugBufferEstimate;
@@ -1388,8 +1398,8 @@ void diagnoseHeapUsage() {
     
     Serial.print("[DIAG] Heap:");
     Serial.print(heapStart);
-    Serial.print(" Meas:");
-    Serial.print(measurementsEstimate);
+    Serial.print(" MeasCount:");
+    Serial.print(measurementCount);
     Serial.print(" Debug:");
     Serial.print(debugBufferEstimate);
     Serial.print(" Frag:");
@@ -1404,7 +1414,7 @@ void diagnoseHeapUsage() {
             f.print("{\"evt\":\"DIAG\",\"h\":");
             f.print(heapStart);
             f.print(",\"m\":");
-            f.print(measurementsEstimate);
+            f.print(measurementCount);
             f.print(",\"d\":");
             f.print(debugBufferEstimate);
             f.print(",\"f\":");
@@ -1424,15 +1434,7 @@ bool resetComponentProactive(const char* component) {
     uint32_t heapBefore = ESP.getFreeHeap();
     
     // Limpiar según componente identificado
-    if (strcmp(component, "MEASUREMENTS") == 0 && jsonIndex > 10) {
-        // Purgar mediciones, mantener solo últimas 10
-        for (int i = 0; i < 10; i++) {
-            measurements[i] = measurements[jsonIndex - 10 + i];
-        }
-        jsonIndex = 10;
-        saveMeasurementFile(arrayToString(measurements, jsonIndex));
-    }
-    else if (strcmp(component, "DEBUG_BUFFER") == 0) {
+    if (strcmp(component, "DEBUG_BUFFER") == 0) {
         // Limpiar debug buffer
         for (int i = 0; i < DEBUG_LOG_SIZE; i++) {
             debugLogBuffer[i] = "";
@@ -1449,14 +1451,7 @@ bool resetComponentProactive(const char* component) {
         debugLogIndex = 0;
         debugLogCount = 0;
         
-        // Mediciones (mantener solo 5)
-        if (jsonIndex > 5) {
-            for (int i = 0; i < 5; i++) {
-                measurements[i] = measurements[jsonIndex - 5 + i];
-            }
-            jsonIndex = 5;
-            saveMeasurementFile(arrayToString(measurements, jsonIndex));
-        }
+        // Measurements are file based, nothing to purge in RAM
     }
     
     uint32_t heapAfter = ESP.getFreeHeap();
@@ -1470,23 +1465,6 @@ bool resetComponentProactive(const char* component) {
     Serial.print(heapAfter);
     Serial.print(" +");
     Serial.println(recovered);
-    
-    // Log solo si hay suficiente heap
-    if (heapAfter > HEAP_LOGGING_THRESHOLD) {
-        File f = LittleFS.open(HEALTH_LOG_FILE, "a");
-        if (f) {
-            f.print("{\"evt\":\"RCP\",\"c\":\"");
-            f.print(component);
-            f.print("\",\"b\":");
-            f.print(heapBefore);
-            f.print(",\"a\":");
-            f.print(heapAfter);
-            f.print(",\"r\":");
-            f.print(recovered);
-            f.println("}");
-            f.close();
-        }
-    }
     
     // Éxito si recuperamos >2KB o llegamos a nivel seguro
     return (recovered > 2000 || heapAfter >= HEAP_WARNING_THRESHOLD);
@@ -1617,8 +1595,8 @@ void handleDownloadLogs() {
     streamFile(HEALTH_LOG_PREV_FILE, "HEALTH LOG (previous rotated)");
     streamFile(HEALTH_LOG_FILE, "HEALTH LOG (current)");
     // Measurements count summary only (full history already accessible separately)
-    server.sendContent("\n=== SUMMARY ===\nMeasurements in RAM: ");
-    server.sendContent(String(jsonIndex).c_str());
+    server.sendContent("\n=== SUMMARY ===\nMeasurements in File (approx): ");
+    server.sendContent(String(measurementCount).c_str());
     server.sendContent("\nHealth Log Events Skipped: ");
     server.sendContent(String(healthLogSkipCount).c_str());
     server.sendContent("\nFree Heap: ");
@@ -2084,20 +2062,8 @@ void saveManualStage(int index) {
      Serial.print("[INFO] Etapa manual guardada: "); Serial.println(stages[manualStageIndex].name);
 }
 
-// Carga historial desde archivo
-String loadMeasurements() {
-    File file = LittleFS.open("/Measurements.txt", "r");
-    if (!file || !file.available()) {
-        if(file) file.close();
-        Serial.println("[INFO] No 'Measurements.txt' o vacío.");
-        return "";
-    }
-    String measurementsStr = file.readString();
-    file.close();
-    Serial.println("[INFO] Historial cargado desde archivo.");
-    // Podría añadirse validación básica del contenido aquí si es necesario
-    return measurementsStr;
-}
+// Cargar historial desde archivo - REMOVED (File based now)
+// String loadMeasurements() { ... }
 
 // Guarda TODO el historial actual en archivo (sobrescribe)
 void saveMeasurementFile(const String& allMeasurementsString) {
@@ -2132,203 +2098,125 @@ void saveMeasurementFile(const String& allMeasurementsString) {
     Serial.println("[INFO] Historial guardado en archivo (reemplazo atómico).");
 }
 
-// Parsea string de historial (formato {j1},{j2},..) en array
-int parseData(String input, String output[]) {
-    int count = 0;
-    int startIndex = 0;
-    int endIndex = 0;
-    input.trim(); // Quitar espacios al inicio/fin
-    
-    while (startIndex < input.length() && count < MAX_JSON_OBJECTS) {
-        startIndex = input.indexOf('{', startIndex);
-        if (startIndex == -1) break; // No más objetos JSON
-        endIndex = input.indexOf('}', startIndex);
-        if (endIndex == -1) {
-            Serial.println("[PARSE WARN] Objeto JSON incompleto encontrado. Deteniendo parseo.");
-            break; // Malformed JSON object
-        }
-        
-        // Extraer el objeto JSON
-        String jsonObj = input.substring(startIndex, endIndex + 1);
-        
-        // Validación: debe tener contenido y al menos un campo con comillas
-        if (jsonObj.length() > 5 && jsonObj.indexOf("\"") > 0) {
-            output[count++] = jsonObj;
-        } else {
-            Serial.print("[PARSE WARN] Saltando objeto JSON vacío/inválido: '");
-            Serial.print(jsonObj.substring(0, 30));
-            Serial.println("...'");
-        }
-        
-        // Mover al siguiente carácter después del '}'
-        startIndex = endIndex + 1;
-        
-        // Omitir la coma y espacios opcionales antes del siguiente objeto
-        while(startIndex < input.length() && 
-              (input.charAt(startIndex) == ',' || isspace(input.charAt(startIndex)))) {
-            startIndex++;
-        }
-        
-        if ((count % 20) == 0) { yield(); }
-    }
-    
-    if (count >= MAX_JSON_OBJECTS) {
-       Serial.println("[PARSE WARN] Se alcanzó el límite MAX_JSON_OBJECTS durante el parseo.");
-    }
-    
-    Serial.print("[PARSE INFO] Parseados ");
-    Serial.print(count);
-    Serial.println(" objetos JSON válidos.");
-    
-    return count;
-}
+// Parsea string de historial - REMOVED (File based now)
+// int parseData(String input, String output[]) { ... }
 
-// Convierte array de historial a String (formato {j1},{j2},..)
-String arrayToString(String array[], size_t arraySize) {
-    String result = "";
-    bool first = true;
-    int validCount = 0;
-    
-    for (size_t i = 0; i < arraySize; i++) {
-        // Validación estricta: verificar que tiene contenido JSON válido
-        if (array[i].length() > 5 && 
-            array[i].startsWith("{") && 
-            array[i].endsWith("}") &&
-            array[i].indexOf("\"") > 0) {
-            
-            if (!first) {
-                result += ","; // Añadir coma separadora
-            }
-            result += array[i];
-            first = false;
-            validCount++;
-        } else if (array[i].length() > 0) {
-            // Loguear si hay un elemento inválido en el array que no sea vacío
-            Serial.print("[ARRAY2STR WARN] Ignorando elemento inválido en índice ");
-            Serial.print(i);
-            Serial.print(": '");
-            Serial.print(array[i].substring(0, 30));
-            Serial.println("...'");
-        }
-        if ((i % 20) == 0) { yield(); }
-    }
-    
-    if (validCount != arraySize && arraySize > 0) {
-        Serial.print("[ARRAY2STR INFO] Convertidos ");
-        Serial.print(validCount);
-        Serial.print(" de ");
-        Serial.print(arraySize);
-        Serial.println(" elementos válidos");
-    }
-    
-    return result;
-}
+// Convierte array de historial a String - REMOVED (File based now)
+// String arrayToString(String array[], size_t arraySize) { ... }
 
-// Guarda una nueva medición en array y archivo (con deslizamiento)
+// Formatea array de historial a JSON Array String - REMOVED (File based now)
+// void formatMeasurementsToString(String& formattedString) { ... }
+
+// Guarda una nueva medición en archivo (con rotación si es necesario)
 void saveMeasurement(const String& jsonString) {
     // Validación estricta del formato JSON
     if (jsonString.length() < 5 || 
         !jsonString.startsWith("{") || 
         !jsonString.endsWith("}") ||
-        jsonString.indexOf("\"") < 0) { // Debe contener al menos un campo
+        jsonString.indexOf("\"") < 0) { 
         Serial.print("[ERROR] Intento guardar medición inválida: '");
         Serial.print(jsonString.substring(0, 50));
         Serial.println("...'");
         return;
     }
     
-    Serial.println("[ACCION] Guardando nueva medición:");
-    Serial.println(jsonString);
+    Serial.println("[ACCION] Guardando nueva medición en archivo...");
 
-    if (jsonIndex < MAX_JSON_OBJECTS) {
-        measurements[jsonIndex++] = jsonString;
-        // Modo eficiente: anexar al archivo existente con separador si corresponde
-        appendMeasurementToFile(jsonString);
-    } else {
-        // Array lleno, desplazar todos los elementos una posición hacia la izquierda
-        Serial.println("[WARN] Array mediciones lleno. Desplazando historial...");
-        for (int i = 0; i < MAX_JSON_OBJECTS - 1; i++) {
-            measurements[i] = measurements[i + 1];
-            if ((i % 20) == 0) { yield(); }
-        }
-        // Añadir la nueva medición al final
-        measurements[MAX_JSON_OBJECTS - 1] = jsonString;
-        // jsonIndex ya está en MAX_JSON_OBJECTS, no necesita incrementarse
-        // Reescribir archivo completo de forma atómica solo cuando se alcanza el límite
-        saveMeasurementFile(arrayToString(measurements, jsonIndex));
-    }
-}
-
-// Añade una medición al final del archivo, insertando coma si hay contenido previo
-void appendMeasurementToFile(const String& jsonString) {
     const char* path = "/Measurements.txt";
     bool addComma = false;
+    size_t currentSize = 0;
+
     if (LittleFS.exists(path)) {
         File rf = LittleFS.open(path, "r");
         if (rf) {
-            size_t sz = rf.size();
-            addComma = (sz > 0);
+            currentSize = rf.size();
+            addComma = (currentSize > 0);
             rf.close();
         }
     }
+
+    // Rotación si excede el límite
+    if (currentSize > MAX_HISTORY_FILE_SIZE) {
+        Serial.println("[INFO] Archivo historial excede límite. Rotando...");
+        
+        File f = LittleFS.open(path, "r");
+        if (f) {
+            // Buscar punto de corte para mantener los últimos bytes
+            size_t seekPos = currentSize - KEEP_HISTORY_FILE_SIZE;
+            f.seek(seekPos);
+            
+            // Avanzar hasta encontrar el inicio de un objeto JSON '{'
+            // para no cortar un JSON a la mitad
+            while (f.available()) {
+                char c = f.read();
+                if (c == '{') {
+                    // Retroceder uno para incluir el '{'
+                    f.seek(f.position() - 1);
+                    break;
+                }
+            }
+            
+            // Copiar el resto a un archivo temporal
+            File tmp = LittleFS.open("/Measurements.tmp", "w");
+            if (tmp) {
+                while (f.available()) {
+                    tmp.write(f.read());
+                }
+                tmp.close();
+                f.close();
+                
+                // Reemplazar archivo original
+                LittleFS.remove(path);
+                LittleFS.rename("/Measurements.tmp", path);
+                
+                // Recalcular tamaño y flag de coma
+                File rf = LittleFS.open(path, "r");
+                if (rf) {
+                    currentSize = rf.size();
+                    addComma = (currentSize > 0);
+                    rf.close();
+                }
+                
+                // Recalcular contador
+                measurementCount = 0;
+                File rf2 = LittleFS.open(path, "r");
+                if (rf2) {
+                    while (rf2.available()) {
+                        if (rf2.read() == '{') measurementCount++;
+                    }
+                    rf2.close();
+                }
+                Serial.print("[INFO] Rotación completada. Nuevas mediciones: ");
+                Serial.println(measurementCount);
+            } else {
+                f.close();
+                Serial.println("[ERROR] No se pudo crear archivo temporal para rotación.");
+            }
+        }
+    }
+
+    // Anexar nueva medición
     File af = LittleFS.open(path, "a");
     if (!af) {
-        Serial.println("[ERROR] No se pudo abrir 'Measurements.txt' en modo append. Reintentando con reescritura completa.");
-        // Fallback: reescribir completo
-        saveMeasurementFile(arrayToString(measurements, jsonIndex));
+        Serial.println("[ERROR] No se pudo abrir 'Measurements.txt' para escritura.");
         return;
     }
+    
     if (addComma) {
         af.print(",");
     }
-    size_t w1 = af.print(jsonString);
-    af.flush();
+    af.print(jsonString);
     af.close();
-    if (w1 != jsonString.length()) {
-        Serial.println("[ERROR] Fallo al anexar medición (bytes incompletos). Se intentará reparar en próximo arranque.");
-    } else {
-        Serial.println("[INFO] Medición anexada al archivo.");
-    }
+    
+    measurementCount++;
+    Serial.println("[INFO] Medición guardada.");
 }
 
-// Formatea array de historial a JSON Array String "[{j1},{j2},..]"
-void formatMeasurementsToString(String& formattedString) {
-    formattedString = "["; // Iniciar array JSON
-    bool first = true;
-    int validCount = 0;
-    for (int i = 0; i < jsonIndex; i++) {
-         // Validación estricta: verificar que no esté vacío, tenga llaves, y contenga al menos un campo
-        if (measurements[i].length() > 5 && 
-            measurements[i].startsWith("{") && 
-            measurements[i].endsWith("}") &&
-            measurements[i].indexOf("\"") > 0) { // Debe tener al menos un campo con comillas
-            
-            if (!first) {
-                formattedString += ","; // Coma separadora
-            }
-            formattedString += measurements[i]; // Añadir el objeto JSON
-            first = false;
-            validCount++;
-        } else if (measurements[i].length() > 0) {
-            // Log de elementos inválidos para debugging
-            Serial.print("[FORMAT WARN] Saltando medición inválida idx=");
-            Serial.print(i);
-            Serial.print(": '");
-            Serial.print(measurements[i].substring(0, 30));
-            Serial.println("...'");
-        }
-        if ((i % 20) == 0) { yield(); }
-    }
-    formattedString += "]"; // Cerrar array JSON
-    
-    if (validCount != jsonIndex && jsonIndex > 0) {
-        Serial.print("[FORMAT INFO] Formateadas ");
-        Serial.print(validCount);
-        Serial.print(" de ");
-        Serial.print(jsonIndex);
-        Serial.println(" mediciones (algunas se saltaron por ser inválidas)");
-    }
-}
+// Añade una medición al final del archivo - MERGED into saveMeasurement
+// void appendMeasurementToFile(const String& jsonString) { ... }
+
+// Formatea array de historial a JSON Array String - REMOVED
+// void formatMeasurementsToString(String& formattedString) { ... }
 
 // Registra un evento en el historial (activación de ventilador/extractor, etc.)
 void logEvent(const String& eventType, const String& details) {
@@ -2927,60 +2815,48 @@ void handleSaveWifiCredentials() {
 }
 
 // Handler para /loadMeasurement - Cargar historial
+// Handler para /loadMeasurement - Cargar historial (STREAMING)
 void handleLoadMeasurement() {
-    Serial.println("[HTTP] Solicitud /loadMeasurement (GET).");
+    Serial.println("[HTTP] Solicitud /loadMeasurement (GET) - Streaming file.");
     
-    // OPTIMIZACIÓN CRÍTICA: Stream directo sin construir String gigante
-    // Esto ahorra ~15KB de heap en sistemas con muchas mediciones
     server.sendHeader("Access-Control-Allow-Origin", "*");
     server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     server.setContentLength(CONTENT_LENGTH_UNKNOWN);
     server.send(200, "application/json", "");
     
-    // Enviar array JSON por partes directamente al cliente
     server.sendContent("[");
-    bool first = true;
-    int validCount = 0;
     
-    for (int i = 0; i < jsonIndex; i++) {
-        // Validación estricta: verificar que no esté vacío, tenga llaves, y contenga al menos un campo
-        if (measurements[i].length() > 5 && 
-            measurements[i].startsWith("{") && 
-            measurements[i].endsWith("}") &&
-            measurements[i].indexOf("\"") > 0) {
-            
-            if (!first) {
-                server.sendContent(",");
+    if (LittleFS.exists("/Measurements.txt")) {
+        File f = LittleFS.open("/Measurements.txt", "r");
+        if (f) {
+            // Stream file content in chunks
+            uint8_t buf[512];
+            while (f.available()) {
+                size_t len = f.read(buf, sizeof(buf));
+                // Use sendContent to handle chunked encoding correctly
+                server.sendContent((const char*)buf, len);
+                yield(); // Important for network stack
             }
-            server.sendContent(measurements[i]);
-            first = false;
-            validCount++;
+            f.close();
         }
-        if ((i % 10) == 0) { yield(); } // Yield cada 10 items
     }
     
     server.sendContent("]");
-    // Finalizar el envío correctamente: enviar chunk vacío para terminar la codificación chunked
-    server.sendContent("");
-    // Cerrar la conexión del cliente de forma ordenada
-    server.client().stop(); // Cerrar conexión
+    server.sendContent(""); // End chunked transfer
+    server.client().stop();
     
-    Serial.print("[HTTP] /loadMeasurement enviado (stream): ");
-    Serial.print(validCount);
-    Serial.println(" mediciones");
+    Serial.println("[HTTP] /loadMeasurement stream completado.");
 }
 
+// Handler para /clearHistory - Borrar historial
 // Handler para /clearHistory - Borrar historial
 void handleClearMeasurementHistory() {
      Serial.println("[HTTP] Solicitud /clearHistory (POST).");
      server.sendHeader("Access-Control-Allow-Origin", "*");
      Serial.println("[ACCION] Borrando historial de mediciones...");
 
-     // Limpiar el array en memoria
-     for (int i = 0; i < MAX_JSON_OBJECTS; i++) {
-         measurements[i] = ""; // O asignar nullptr si se usa String*
-     }
-     jsonIndex = 0; // Resetear el índice
+     // Resetear contador
+     measurementCount = 0;
 
      // Borrar el archivo del sistema de archivos
      if (LittleFS.exists("/Measurements.txt")) {
@@ -2988,13 +2864,12 @@ void handleClearMeasurementHistory() {
             Serial.println("[INFO] Archivo 'Measurements.txt' borrado.");
         } else {
             Serial.println("[ERROR] No se pudo borrar 'Measurements.txt'.");
-            // Continuar de todos modos, al menos el array en memoria está limpio
         }
      } else {
          Serial.println("[INFO] 'Measurements.txt' no existía, no se requiere borrado.");
      }
 
-     Serial.println("[INFO] Historial de mediciones borrado (memoria y archivo).");
+     Serial.println("[INFO] Historial de mediciones borrado.");
      server.send(200, "application/json", "{\"status\":\"success\", \"message\":\"Measurement history cleared\"}");
 }
 
@@ -4375,7 +4250,7 @@ void handleSerialCommands() {
              unsigned long currentMillis = millis();
              unsigned long remainingMs = (nextMeasureTimestamp > currentMillis) ? (nextMeasureTimestamp - currentMillis) : 0;
              Serial.print("Next Measurement ~: "); Serial.print(remainingMs / 3600000UL); Serial.print("h "); Serial.print((remainingMs % 3600000UL) / 60000UL); Serial.println("m");
-             Serial.print("History Records: "); Serial.println(jsonIndex);
+             Serial.print("History Records: "); Serial.println(measurementCount);
              Serial.print("Free Heap: "); Serial.println(ESP.getFreeHeap());
              Serial.println("--- Current Stages Config ---");
              for(int i=0; i<numStages; i++) {
